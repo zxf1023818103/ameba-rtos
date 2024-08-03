@@ -45,3 +45,8 @@ build_info.h
 *.ewt
 /**/EWARM-RELEASE/Debug/
 EWARM-RELEASE/settings/
+
+/venv
+amebadplus_gcc_project/project_km4/asdk/lib/application/lib_cmsis_dsp.a
+amebadplus_gcc_project/project_km4/asdk/lib/application/lib_http2.a
+amebadplus_gcc_project/project_km4/asdk/lib/application/lib_user.a
