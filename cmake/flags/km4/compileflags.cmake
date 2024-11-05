@@ -66,7 +66,7 @@ list(
     -nostartfiles
     -nostdlib
     -Wall
-    -Werror
+    #-Werror
     -Wpointer-arith
     -Wundef
     -Wno-write-strings

@@ -320,7 +320,8 @@ void wifi_fast_connect_enable(u8 enable)
 		p_store_fast_connect_info = NULL;
 	} else {
 		// this function will be called after wlan init done to read info from flash and do fast connect
-		p_wifi_do_fast_connect = wifi_do_fast_connect;
+		extern int my_wifi_do_fast_connect(void);
+		p_wifi_do_fast_connect = my_wifi_do_fast_connect;
 
 		// this function will be called after wifi_connection success to store connect info to flash
 		p_store_fast_connect_info = write_fast_connect_data_to_flash;
