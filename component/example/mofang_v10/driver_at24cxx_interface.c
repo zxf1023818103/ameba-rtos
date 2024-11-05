@@ -36,6 +36,13 @@
  */
 
 #include "driver_at24cxx_interface.h"
+#include "i2c_api.h"
+#include "i2c_ex_api.h"
+#include "example_mofang_v10.h"
+#include "os_wrapper_time.h"
+#include <stdio.h>
+
+static i2c_t i2c0;
 
 /**
  * @brief  interface iic bus init
@@ -46,6 +53,9 @@
  */
 uint8_t at24cxx_interface_iic_init(void)
 {
+    memset(&i2c0, 0, sizeof(i2c_t));
+    i2c_init(&i2c0, I2C0_SDA, I2C0_SCL);
+    i2c_frequency(&i2c0, I2C0_FREQ);
     return 0;
 }
 
@@ -74,7 +84,8 @@ uint8_t at24cxx_interface_iic_deinit(void)
  */
 uint8_t at24cxx_interface_iic_read(uint8_t addr, uint8_t reg, uint8_t *buf, uint16_t len)
 {
-    return 0;
+    addr >>= 1;
+    return ((i2c_write(&i2c0, addr, (const char*)&reg, 1, 0) == 1) && (i2c_read(&i2c0, addr, (char*)buf, len, 1) == len)) ? 0 : 1;
 }
 
 /**
@@ -90,7 +101,8 @@ uint8_t at24cxx_interface_iic_read(uint8_t addr, uint8_t reg, uint8_t *buf, uint
  */
 uint8_t at24cxx_interface_iic_write(uint8_t addr, uint8_t reg, uint8_t *buf, uint16_t len)
 {
-    return 0;
+    addr >>= 1;
+    return ((i2c_write(&i2c0, addr, (const char*)&reg, 1, 0) == 1) && (i2c_write(&i2c0, addr, (char*)buf, len, 1) == len)) ? 0 : 1;
 }
 
 /**
@@ -106,7 +118,9 @@ uint8_t at24cxx_interface_iic_write(uint8_t addr, uint8_t reg, uint8_t *buf, uin
  */
 uint8_t at24cxx_interface_iic_read_address16(uint8_t addr, uint16_t reg, uint8_t *buf, uint16_t len)
 {
-    return 0;
+    addr >>= 1;
+    char reg16[2] = { (char)(reg >> 8), (char)reg };
+    return ((i2c_write(&i2c0, addr, reg16, 2, 0) == 2) && (i2c_read(&i2c0, addr, (char*)buf, len, 1) == len)) ? 0 : 1;
 }
 
 /**
@@ -122,7 +136,9 @@ uint8_t at24cxx_interface_iic_read_address16(uint8_t addr, uint16_t reg, uint8_t
  */
 uint8_t at24cxx_interface_iic_write_address16(uint8_t addr, uint16_t reg, uint8_t *buf, uint16_t len)
 {
-    return 0;
+    addr >>= 1;
+    char reg16[2] = { (char)(reg >> 8), (char)reg };
+    return ((i2c_write(&i2c0, addr, reg16, 2, 0) == 2) && (i2c_write(&i2c0, addr, (char*)buf, len, 1) == len)) ? 0 : 1;
 }
 
 /**
@@ -132,7 +148,7 @@ uint8_t at24cxx_interface_iic_write_address16(uint8_t addr, uint16_t reg, uint8_
  */
 void at24cxx_interface_delay_ms(uint32_t ms)
 {
-
+    rtos_time_delay_ms(ms);
 }
 
 /**
@@ -142,5 +158,8 @@ void at24cxx_interface_delay_ms(uint32_t ms)
  */
 void at24cxx_interface_debug_print(const char *const fmt, ...)
 {
-    
+    va_list args;
+    va_start(args, fmt);
+    vprintf(fmt, args);
+    va_end(args);
 }
