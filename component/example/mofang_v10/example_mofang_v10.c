@@ -120,7 +120,3 @@ void app_pre_example(void)
     at24cxx_basic_init(AT24C16, AT24CXX_ADDRESS_A000);
 }
 
-void app_example(void)
-{
-    
-}
