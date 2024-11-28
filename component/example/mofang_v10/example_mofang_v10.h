@@ -5,6 +5,9 @@
 #define I2C0_SDA PB_21
 #define I2C0_FREQ 400000
 
+#define RPC_PORT 6666
+
+
 //0
 #define EPPROM_CHECK_ADDR			(0)
 #define EPPROM_CHECK_SIZE			10
@@ -226,5 +229,76 @@
 
 
 #define YZY_BASE_ADDR 1024
+
+#define d_yzy_appkey_addr YZY_BASE_ADDR
+#define d_yzy_appkey_addr_len  48
+
+#define d_yzy_product_key_addr  (d_yzy_appkey_addr+d_yzy_appkey_addr_len)//48
+#define d_yzy_product_key_addr_len  16
+
+#define d_yzy_device_name_addr  (d_yzy_product_key_addr+d_yzy_product_key_addr_len)//64
+#define d_yzy_device_name_addr_len  16
+
+#define d_yzy_device_key_addr  (d_yzy_device_name_addr+d_yzy_device_name_addr_len)//80
+#define d_yzy_device_key_addr_len  48
+
+#define d_yzy_ReturnPTickey_addr (d_yzy_device_key_addr+d_yzy_device_key_addr_len)//128
+#define d_yzy_ReturnPTickey_addr_len 5
+
+#define d_yzy_ReturnETickey_addr (d_yzy_ReturnPTickey_addr+d_yzy_ReturnPTickey_addr_len)//133
+#define d_yzy_ReturnETickey_addr_len 5
+
+#define d_yzy_ElectricCount_addr (d_yzy_ReturnETickey_addr+d_yzy_ReturnETickey_addr_len)//138
+#define d_yzy_ElectricCount_addr_len 5
+
+#define d_yzy_ReturnElectric_addr (d_yzy_ElectricCount_addr+d_yzy_ElectricCount_addr_len)//143
+#define d_yzy_ReturnElectric_addr_len 5
+
+
+#define d_yzy_PhysicalCount_addr (d_yzy_ReturnElectric_addr+d_yzy_ReturnElectric_addr_len)//148
+#define d_yzy_PhysicalCount_addr_len 5
+
+#define d_yzy_ReturnPhysical_addr (d_yzy_PhysicalCount_addr+d_yzy_PhysicalCount_addr_len)//153
+#define d_yzy_ReturnPhysical_addr_len 5
+
+#define d_yzy_RemoteStartCount_addr (d_yzy_ReturnPhysical_addr+d_yzy_ReturnPhysical_addr_len)//158
+#define d_yzy_RemoteStartCount_addr_len 5
+
+#define d_yzy_GiftCount_addr (d_yzy_RemoteStartCount_addr+d_yzy_RemoteStartCount_addr_len)//163
+#define d_yzy_GiftCount_addr_len 5
+
+#define d_yzy_DisturbCount_addr (d_yzy_GiftCount_addr+d_yzy_GiftCount_addr_len)//168
+#define d_yzy_DisturbCount_addr_len 5
+
+#define d_yzy_ScanCode_addr (d_yzy_DisturbCount_addr+d_yzy_DisturbCount_addr_len)//173
+
+#define d_yzy_ScanCode_addr_len 5
+
+#define d_yzy_ReadCardMagic_addr (d_yzy_ScanCode_addr+d_yzy_ScanCode_addr_len)//178
+#define d_yzy_ReadCardMagic_addr_len 5
+
+#define d_yzy_ReadCardSucc_addr (d_yzy_ReadCardMagic_addr+d_yzy_ReadCardMagic_addr_len)//183
+#define d_yzy_ReadCardSucc_addr_len 5
+
+#define d_yzy_ReconnectCount_addr (d_yzy_ReadCardSucc_addr+d_yzy_ReadCardSucc_addr_len)//188
+#define d_yzy_ReconnectCount_addr_len 5
+
+#define d_yzy_ConnServerCount_addr (d_yzy_ReconnectCount_addr+d_yzy_ReconnectCount_addr_len)//193
+#define d_yzy_ConnServerCount_addr_len 5
+
+#define d_yzy_ServerAddress_addr (d_yzy_ConnServerCount_addr+d_yzy_ConnServerCount_addr_len)//198
+#define d_yzy_ServerAddress_addr_len  64
+
+#define d_yzy_RequestSlow_addr (d_yzy_ServerAddress_addr+d_yzy_ServerAddress_addr_len)//262
+#define d_yzy_RequestSlow_addr_len 5
+
+#define d_yzy_RequestFail_addr (d_yzy_RequestSlow_addr+d_yzy_RequestSlow_addr_len)//267
+#define d_yzy_RequestFail_addr_len 5
+
+#define d_yzy_RequestSucc_addr (d_yzy_RequestFail_addr+d_yzy_RequestFail_addr_len)//272
+#define d_yzy_RequestSucc_addr_len 5
+
+#define d_yzy_StartCount_addr (d_yzy_RequestSucc_addr+d_yzy_RequestSucc_addr_len)//277
+#define d_yzy_StartCount_addr_len 5
 
 #endif // EXAMPLE_MOFANG_V10_H
