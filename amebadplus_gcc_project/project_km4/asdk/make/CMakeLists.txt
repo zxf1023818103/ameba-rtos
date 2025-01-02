@@ -66,9 +66,9 @@ if(CONFIG_USB_DEVICE_EN)
     add_subdirectory(usb_otg)
 endif()
 
-if(CONFIG_MBEDTLS_ENABLED)
-    add_subdirectory(mbedtls)
-endif()
+# if(CONFIG_MBEDTLS_ENABLED)
+    # add_subdirectory(mbedtls)
+# endif()
 
 if(CONFIG_GUI_EN)
     add_subdirectory(ui)

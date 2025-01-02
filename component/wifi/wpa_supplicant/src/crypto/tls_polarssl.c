@@ -57,7 +57,7 @@ void my_debug(void *ctx, int level, const char *str)
 
 #include <mbedtls/ssl.h>
 #include <mbedtls/debug.h>
-#include <mbedtls/config.h>
+#include MBEDTLS_CONFIG_FILE
 
 #if defined(MBEDTLS_VERSION_NUMBER) && (MBEDTLS_VERSION_NUMBER>=0x03000000)
 #include <mbedtls/net_sockets.h>

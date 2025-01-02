@@ -1,0 +1,4 @@
+[submodule "component/application/amazon/amazon-freertos"]
+	path = component/application/amazon/amazon-freertos
+	url = https://github.com/zxf1023818103/amazon-freertos.git
+	branch = aithinker

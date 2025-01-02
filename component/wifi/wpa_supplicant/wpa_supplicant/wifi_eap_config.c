@@ -315,6 +315,7 @@ void eap_autoreconnect_hdl(u8 method_id)
 
 #include <mbedtls/platform.h>
 #include <mbedtls/ssl.h>
+#include MBEDTLS_CONFIG_FILE
 
 #if defined(MBEDTLS_VERSION_NUMBER) && (MBEDTLS_VERSION_NUMBER>=0x03000000)
 #include "mbedtls/build_info.h"

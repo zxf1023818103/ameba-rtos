@@ -61,8 +61,8 @@ list(
     #${BASEDIR}/component/ssl/ssl_ram_map/rom
 
     #MBEDTLS
-    ${BASEDIR}/component/ssl/mbedtls-${MBEDTLS_VER}/include
-    ${BASEDIR}/component/ssl/mbedtls_ram_map/rom
+    # ${BASEDIR}/component/ssl/mbedtls-${MBEDTLS_VER}/include
+    # ${BASEDIR}/component/ssl/mbedtls_ram_map/rom
 
     #apple
     ${BASEDIR}/component/application/apple/WACServer/External/Curve25519
@@ -84,6 +84,60 @@ list(
     ${BASEDIR}/component/file_system/littlefs/${LITTLEFS_VER}
     ${BASEDIR}/component/file_system/kv
     ${BASEDIR}/component/file_system/vfs
+
+    #amazon
+    ${FREERTOSDIR}/include
+    ${FREERTOSDIR}/portable/GCC/AmebaDplus_KM4/non_secure
+    ${FREERTOSDIR}/portable/GCC/AmebaDplus_KM4/secure
+    ${BASEDIR}/component/application/amazon/amazon-freertos/demos/include
+    ${BASEDIR}/component/application/amazon/amazon-freertos/demos/common/http_demo_helpers
+    ${BASEDIR}/component/application/amazon/amazon-freertos/demos/common/mqtt_demo_helpers
+    ${BASEDIR}/component/application/amazon/amazon-freertos/demos/common/mqtt_subscription_manager
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/corePKCS11/source/dependency/3rdparty/pkcs11/published/2-40-errata-1
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/corePKCS11/source/dependency/3rdparty/pkcs11
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/corePKCS11/source/include
+    ${BASEDIR}/component/application/amazon/amazon-freertos/demos/common/pkcs11_helpers
+    ${BASEDIR}/component/application/amazon/amazon-freertos/demos/device_defender_for_aws
+    ${BASEDIR}/component/application/amazon/amazon-freertos/demos/dev_mode_key_provisioning/include
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/3rdparty/jsmn
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/3rdparty/mbedtls/include
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/3rdparty/mbedtls/include/mbedtls
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/3rdparty/mbedtls_config
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/3rdparty/mbedtls_utils
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/3rdparty/tinycbor/src
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/common/abstractions/mqtt_agent/include
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/common/abstractions/platform/include
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/common/abstractions/platform/include/platform
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/common/abstractions/platform/freertos/include
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/common/abstractions/secure_sockets/include
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/common/abstractions/transport/secure_sockets
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/common/abstractions/wifi/include
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/common/c_sdk/standard/common/include
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/common/c_sdk/standard/common/include/private
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/common/freertos_plus/standard/crypto/include
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/common/freertos_plus/standard/utils/include
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/common/freertos_plus/standard/tls/include
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/common/logging/include
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/backoffAlgorithm/source/include
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/coreHTTP/source/include
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/coreHTTP/source/interface
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/coreHTTP/source/dependency/3rdparty/llhttp/include
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/coreJSON/source/include
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/coreMQTT/source/include
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/coreMQTT/source/interface
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/coreMQTT-Agent/source/include
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/device_defender_for_aws/source/include
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/device_shadow_for_aws/source/include
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/jobs_for_aws/source/include
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/jobs_for_aws/source/otaJobParser/include
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/ota_for_aws/source/include
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/ota_for_aws/source
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/ota_for_aws/source/portable
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/ota_for_aws/source/portable/os
+    ${BASEDIR}/component/application/amazon/amazon-freertos/libraries/mqtt_file_streams_for_aws/source/include
+    ${BASEDIR}/component/application/amazon/amazon-freertos/ports/amebaDplus/config_files
+    ${BASEDIR}/component/application/amazon/amazon-freertos/ports/amebaDplus/ota
+    ${BASEDIR}/component/application/amazon/amazon-freertos/demos/ota/ota_demo_mqtt_streams
     )
 
 if(CONFIG_EMWIN_EN)

@@ -56,6 +56,7 @@
   * @}
   */
 
+extern u32 IMG_ADDR[OTA_IMGID_MAX][2];
 
 /** @defgroup OTA
   * @brief OTA driver modules

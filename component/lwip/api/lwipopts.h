@@ -611,7 +611,11 @@ Certain platform allows computing and verifying the IP, UDP, TCP and ICMP checks
 #endif
 #endif
 
-#if defined(ENABLE_AMAZON_COMMON)
+#undef LWIP_STATS
+#define LWIP_STATS 1
+#define LWIP_SNMP                  LWIP_UDP
+#define MIB2_STATS                 LWIP_SNMP
+
 #define LWIP_COMPAT_MUTEX_ALLOWED
 #define ERRNO                           1
 #define LWIP_SO_SNDTIMEO                1
@@ -622,7 +626,6 @@ Certain platform allows computing and verifying the IP, UDP, TCP and ICMP checks
 #define LWIP_TCPIP_CORE_LOCKING         1
 #define LWIP_SOCKET_SET_ERRNO           1
 #define SOCKETS_DEBUG                   LWIP_DBG_ON
-#endif
 
 #if defined(CONFIG_EXAMPLE_AZURE_IOT_HUB) && CONFIG_EXAMPLE_AZURE_IOT_HUB
 #define ERRNO                           1
@@ -658,6 +661,8 @@ Certain platform allows computing and verifying the IP, UDP, TCP and ICMP checks
 #undef LWIP_HOOK_IP6_INPUT
 #undef LWIP_HOOK_IP4_INPUT
 #undef LWIP_NETIF_EXT_STATUS_CALLBACK
+#undef MDNS_RESP_USENETIF_EXTCALLBACK
+#undef MDNS_MAX_SERVICES
 #undef MEMP_NUM_SYS_TIMEOUT
 
 #define LWIP_IPV6                       1
@@ -675,6 +680,8 @@ Certain platform allows computing and verifying the IP, UDP, TCP and ICMP checks
 #define LWIP_HOOK_IP6_INPUT rtk_otbr_lwip_hook_ip6_input
 #define LWIP_HOOK_IP4_INPUT rtk_otbr_lwip_hook_ip4_input
 #define LWIP_NETIF_EXT_STATUS_CALLBACK  1
+#define MDNS_RESP_USENETIF_EXTCALLBACK  1
+#define MDNS_MAX_SERVICES               10
 #define MEMP_NUM_SYS_TIMEOUT            20
 #define LWIP_HOOK_FILENAME "rtk_otbr_tcpip_hook.h"
 #endif
