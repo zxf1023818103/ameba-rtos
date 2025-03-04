@@ -26,7 +26,6 @@ list(APPEND d_GLOBAL_MCU_COMPILE_CPP_OPTIONS
     #TODO: add global mcu compile option for cpp here
     ${d_GLOBAL_MCU_COMPILE_C_OPTIONS}
 )
-list(REMOVE_ITEM d_GLOBAL_MCU_COMPILE_CPP_OPTIONS  -Wstrict-prototypes)
 # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ #
 
 # +++++++++++++++ d_GLOBAL_MCU_COMPILE_ASM_OPTIONS ++++++++++++++ #

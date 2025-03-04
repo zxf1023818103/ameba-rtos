@@ -21,7 +21,6 @@ list(APPEND d_GLOBAL_PLATFORM_COMPILE_CPP_OPTIONS
     #TODO: add global platform compile option for cpp here
     ${d_GLOBAL_PLATFORM_COMPILE_C_OPTIONS}
 )
-list(REMOVE_ITEM d_GLOBAL_PLATFORM_COMPILE_CPP_OPTIONS  -Wstrict-prototypes)
 # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ #
 
 # +++++++++++++++ d_GLOBAL_PLATFORM_COMPILE_ASM_OPTIONS ++++++++++++++ #

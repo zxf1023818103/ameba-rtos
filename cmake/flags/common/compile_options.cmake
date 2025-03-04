@@ -39,7 +39,6 @@ list(APPEND d_GLOBAL_COMMON_COMPILE_C_OPTIONS
     -fno-builtin-memset
     -fno-builtin-memcpy
 
-    -Wundef
     -Wno-write-strings
     -Wno-maybe-uninitialized
     -save-temps=obj
@@ -50,7 +49,8 @@ list(APPEND d_GLOBAL_COMMON_COMPILE_C_OPTIONS
     -Wextra
 
     # -ffile-prefix-map=${c_BASEDIR}=.
-    -Wstrict-prototypes
+    -Wno-format
+    -Wno-undef
 )
 
 # ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ #
@@ -62,7 +62,6 @@ list(APPEND d_GLOBAL_COMMON_COMPILE_CPP_OPTIONS
     -std=c++11
     -fno-use-cxa-atexit
 )
-list(REMOVE_ITEM d_GLOBAL_COMMON_COMPILE_CPP_OPTIONS  -Wstrict-prototypes)
 # ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ #
 
 

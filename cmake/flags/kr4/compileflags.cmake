@@ -74,12 +74,6 @@ list(
 )
 
 list(
-    APPEND GLOBAL_C_OPTIONS
-    -Wstrict-prototypes
-)
-
-
-list(
     APPEND GLOBAL_ASM_OPTIONS
     -g -march=rv32imafc_xrtkcsh1p0 -mabi=ilp32f -c
     -MMD -MP

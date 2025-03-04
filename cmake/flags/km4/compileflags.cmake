@@ -112,12 +112,6 @@ list(
 )
 
 list(
-    APPEND GLOBAL_C_OPTIONS
-    -Wstrict-prototypes
-)
-
-
-list(
     APPEND GLOBAL_ASM_OPTIONS
     -g -mthumb -c
     -MMD -MP

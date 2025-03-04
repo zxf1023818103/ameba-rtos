@@ -36,8 +36,6 @@ list(
     -Wall
     -Werror
     -Wpointer-arith
-    -Wstrict-prototypes
-    -Wundef
     -Wno-write-strings
     -Wno-maybe-uninitialized
     -save-temps=obj
