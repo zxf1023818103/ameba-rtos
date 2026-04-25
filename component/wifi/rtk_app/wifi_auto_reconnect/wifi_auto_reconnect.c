@@ -204,6 +204,9 @@ int wifi_stop_autoreconnect(void)
 	return RTK_SUCCESS;
 }
 
+#else
+int wifi_stop_autoreconnect(void) { return RTK_SUCCESS; }
+void rtw_reconn_new_conn(struct rtw_network_info *connect_param) { (void) connect_param; }
 #endif
 
 s32 wifi_set_autoreconnect(u8 enable)
