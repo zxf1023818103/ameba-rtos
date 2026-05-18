@@ -165,5 +165,22 @@ end
 set FlashWriteComplete = 0x1
 c
 
+# 6. Restore boot config + warm-reset so the chip boots the freshly flashed
+# firmware instead of staying in the RAM flash loader. See System_Reset() in
+# component/soc/<soc>/fwlib/ram_common/ameba_reset.c — sequence is unlock key
+# 0x96969696 -> set RST bit in CTRL -> trigger 0x69696969.
+# Step 3 above set REG_LSYS_BOOT_CFG bit 28 to "boot from RAM loader"; clear
+# it now so the next boot follows the normal flash path.
+set $CFG_REG_ADDR = $SYSTEM_CTRL_BASE + $REG_LSYS_BOOT_CFG
+set $Temp = {int}($CFG_REG_ADDR)
+set $Temp = ($Temp & ~(0x01 << 28))
+set {int}($CFG_REG_ADDR) = $Temp
+
+# Trigger system reset (KM4 SYS_RST). REG_LSYS_SW_RST_CTRL = base+0x260,
+# REG_LSYS_SW_RST_TRIG = base+0x264. LSYS_BIT_KM4_SYS_RST = bit 31.
+set {int}($SYSTEM_CTRL_BASE + 0x264) = 0x96969696
+set {int}($SYSTEM_CTRL_BASE + 0x260) = 0x80000000
+set {int}($SYSTEM_CTRL_BASE + 0x264) = 0x69696969
+
 quit
 #===============================================================================
