@@ -44,7 +44,7 @@ set debug remote 0
 #===============================================================================
 #CPU must in halt state for restore rom code
 #Type 0: Hardware, halt after reset (normal)
-monitor reset 0
+monitor reset halt
 monitor sleep 20
 monitor halt
-monitor waithalt 2000
+monitor wait_halt 2000

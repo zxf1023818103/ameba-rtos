@@ -103,9 +103,9 @@ end
 
 set $FlashWriteCheckEnabled = $WR_CHECK_EN
 
-monitor reset 0
+monitor reset halt
 monitor sleep 20
-monitor reset 0
+monitor reset halt
 monitor sleep 20
 
 # 1. Preparation (Vector Table Offset / Debug register)
