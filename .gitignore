@@ -62,4 +62,5 @@ compile_commands.json
 .cache
 .venv
 
+tools/scripts/gnu_script/flash_loader_ram_1.bin
 # ignore submodules end
