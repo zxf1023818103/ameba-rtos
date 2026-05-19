@@ -108,7 +108,7 @@ IFLAGS               += -I$(BASEDIR)/component/file_system/fatfs/r0.14b/include 
 			-I$(BASEDIR)/component/file_system/fatfs \
 			-I$(BASEDIR)/component/file_system/ftl \
 			-I$(BASEDIR)/component/file_system/littlefs \
-			-I$(BASEDIR)/component/file_system/littlefs/r2.50 \
+			-I$(BASEDIR)/component/file_system/littlefs/r2.80 \
 			-I$(BASEDIR)/component/file_system/kv \
 			-I$(BASEDIR)/component/file_system/vfs
 

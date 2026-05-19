@@ -12,7 +12,7 @@ ameba_set_if_unset(v_FATFS_VER r0.14b)
 ameba_set_if_unset(v_FREERTOS_VER v10.4.3)
 ameba_set_if_unset(c_FREERTOS_DIR_SUFFIX)
 
-ameba_set_if_unset(v_LITTLEFS_VER r2.50)
+ameba_set_if_unset(v_LITTLEFS_VER r2.80)
 ameba_set_if_unset(v_LWIP_VER v2.1.2)
 ameba_set_if_unset(v_MBEDTLS_VER 3.6.2)
 ameba_set_if_unset(v_HTTP2_VER 1.31.0)
