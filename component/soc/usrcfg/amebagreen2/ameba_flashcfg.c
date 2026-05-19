@@ -58,14 +58,13 @@ const FlashInfo_TypeDef Flash_AVL[] = {
 
 FlashLayoutInfo_TypeDef Flash_Layout[] = {
 	/* Region_Type, [StartAddr, EndAddr] */
-	{IMG_BOOT,      0x08000000, 0x0803FFFF}, //Boot Manifest(4K) + AP Bootloader(76K)
-	//Users should modify below according to their own memory
-	{IMG_APP_OTA1,  0x08040000, 0x081BFFFF}, //Certificate(4K) + Manifest(4K) + AP Application OTA1 + RDP IMG OTA1
+	{IMG_BOOT,      0x08000000, 0x0800FFFF}, //Boot Manifest(4K) + AP Bootloader (slot 64K, actual ~30K)
+	{IMG_APP_OTA1,  0x08010000, 0x0817FFFF}, //Certificate + Manifest + AP Application OTA1 (slot 1472K)
 
-	{IMG_BOOT_OTA2, 0x081C0000, 0x081FFFFF}, //Boot Manifest(4K) + AP Bootloader(76K) OTA
-	{IMG_APP_OTA2,  0x08200000, 0x0837FFFF}, //Certificate(4K) + Manifest(4K) + AP Application OTA2 + RDP IMG OTA2
+	{IMG_BOOT_OTA2, 0x08180000, 0x0818FFFF}, //Boot Manifest + AP Bootloader OTA (slot 64K)
+	{IMG_APP_OTA2,  0x08190000, 0x082FFFFF}, //Certificate + Manifest + AP Application OTA2 (slot 1472K)
 
-	{VFS1,          0x083C0000, 0x0843FFFF}, //VFS region 1 (512K)
+	{VFS1,          0x08300000, 0x083FFFFF}, //VFS region 1 (1M, LittleFS) -- top 1MB, flash unprotected
 	{VFS2,          0xFFFFFFFF, 0xFFFFFFFF}, //VFS region 2
 	{USER,          0xFFFFFFFF, 0xFFFFFFFF}, //reserve for user
 
