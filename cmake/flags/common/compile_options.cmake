@@ -58,7 +58,7 @@ endif()
 # +++++++++++++++ c_GLOBAL_COMMON_COMPILE_CPP_OPTIONS ++++++++++++++ #
 ameba_list_append(c_GLOBAL_COMMON_COMPILE_CPP_OPTIONS
     ${c_GLOBAL_COMMON_COMPILE_C_OPTIONS}
-    -std=c++11
+    -std=c++17
     -fno-use-cxa-atexit
 )
 list(REMOVE_ITEM c_GLOBAL_COMMON_COMPILE_CPP_OPTIONS  -Wstrict-prototypes)
