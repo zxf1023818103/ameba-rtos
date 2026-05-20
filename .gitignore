@@ -63,4 +63,8 @@ compile_commands.json
 .venv
 
 tools/scripts/gnu_script/flash_loader_ram_1.bin
+
+# Realtek MP ImageTool runtime artifacts
+tools/ameba/MP_ImageTool_1_N/Setting.ini
+tools/ameba/MP_ImageTool_1_N/log/
 # ignore submodules end
