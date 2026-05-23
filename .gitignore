@@ -63,8 +63,19 @@ compile_commands.json
 .venv
 
 tools/scripts/gnu_script/flash_loader_ram_1.bin
+tools/scripts/gnu_script/flash_loader_ram_1.dplus.bin
 
 # Realtek MP ImageTool runtime artifacts
 tools/ameba/MP_ImageTool_1_N/Setting.ini
 tools/ameba/MP_ImageTool_1_N/log/
+
+# Realtek AmebaImageTool (GUI) runtime artifacts
+tools/ameba/ImageTool/Setting.json
+
+# AmebaFlash (CLI) runtime artifacts + locally-staged Devices/ copy
+# (see ameba-openocd-flash skill: dist/AmebaFlash.exe looks for
+# ./Devices/Floaders/floader_*.bin but the SDK ships Devices/ one
+# level up; the copy is a local workaround, not source-of-truth.)
+tools/ameba/Flash/dist/Settings.json
+tools/ameba/Flash/dist/Devices/
 # ignore submodules end
