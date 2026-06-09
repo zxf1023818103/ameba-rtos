@@ -64,7 +64,7 @@ FlashLayoutInfo_TypeDef Flash_Layout[] = {
 	{IMG_BOOT_OTA2, 0x08180000, 0x0818FFFF}, //Boot Manifest + AP Bootloader OTA (slot 64K)
 	{IMG_APP_OTA2,  0x08190000, 0x082FFFFF}, //Certificate + Manifest + AP Application OTA2 (slot 1472K)
 
-	{VFS1,          0x08300000, 0x083F9FFF}, //VFS region 1 (1000K, LittleFS) -- aligned to Ameba D 4MB layout; trailing 24K reserved
+	{VFS1,          0x08300000, 0x083FFFFF}, //VFS region 1 (1024K, LittleFS) -- fills to flash end; Ameba D FTL/settings cluster dropped (NimBLE has no FTL), no trailing reserve
 	{VFS2,          0xFFFFFFFF, 0xFFFFFFFF}, //VFS region 2
 	{USER,          0xFFFFFFFF, 0xFFFFFFFF}, //reserve for user
 
