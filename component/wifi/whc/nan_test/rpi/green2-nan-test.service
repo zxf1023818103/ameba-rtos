@@ -1,0 +1,13 @@
+[Unit]
+Description=Green2 NAN single-peer test publisher, PASN responder and TCP echo
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/opt/green2-nan/run-services.sh wlan0
+UMask=0077
+KillMode=control-group
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

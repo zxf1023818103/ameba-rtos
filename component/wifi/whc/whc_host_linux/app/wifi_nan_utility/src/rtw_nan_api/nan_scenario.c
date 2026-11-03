@@ -21,6 +21,13 @@ char *supplicant_log_file;
 char *supplicant_dbg_para;
 char supplicant_pid[16] = {0};
 
+/* The standalone PASN responder receives nl80211 vendor events itself. */
+static bool external_pasn_enabled(void)
+{
+	const char *value = getenv("GREEN2_EXTERNAL_PASN");
+	return value && !strcmp(value, "1");
+}
+
 #define NAN_ATTR_ID_NDP_EXT 0x29
 
 #define GET_NDPE_TOKEN(_sdea_attr, _out) \
@@ -209,6 +216,8 @@ bool _get_supplicant_pid()
 bool _stop_wpa_supplicant()
 {
 	char cmd[512] = {0};
+	if (external_pasn_enabled())
+		return true;
 
 	INFO_PRINT("[rtw_scenario] %s\n", __func__);
 
@@ -231,6 +240,10 @@ bool _stop_wpa_supplicant()
 bool _start_wpa_supplicant()
 {
 	char cmd[512] = {0};
+	if (external_pasn_enabled()) {
+		INFO_PRINT("[rtw_scenario] using external PASN event responder\n");
+		return true;
+	}
 
 	INFO_PRINT("[rtw_scenario] %s\n", __func__);
 
@@ -579,12 +592,33 @@ void nan_evt_handler(uint8_t event_id, void *buf, uint32_t len)
 	}
 }
 
+/* The Green2 firmware does not emit PASN_RESULT for a responder after the
+ * host installs PASN keys. Feed the host-confirmed completion through the
+ * normal NAN callback path so NIK follow-up exchange also runs.
+ */
+void dns_local_pasn_result(const uint8_t peer_nmi[ETH_ALEN],
+			   uint8_t pairing_type)
+{
+	struct nan_evt_pasn_result result = {0};
+
+	if (!peer_nmi)
+		return;
+	result.status = NAN_PASN_DONE;
+	result.local_role = PAIRING_ROLE_RESPONDER;
+	if (pairing_type != NAN_PAIRING_TYPE_SETUP &&
+	    pairing_type != NAN_PAIRING_TYPE_VERIFICATION)
+		return;
+	result.pairing_type = pairing_type;
+	result.remote_nik_caching = pairing_type == NAN_PAIRING_TYPE_SETUP;
+	memcpy(result.peer_nmi, peer_nmi, ETH_ALEN);
+	nan_evt_handler(NAN_EVT_PASN_RESULT, &result, sizeof(result));
+}
+
 RTW_RET_STATUS dns_publish(uint16_t phy_num,
 						   struct utility_bin_path *bin_path,
 						   struct srvc_info *info,
 						   uint8_t is_bt_trigger)
 {
-	uint16_t nan_cap = 0;
 	char nmi[20] = {0};
 	char self_ipv6[50] = {0};
 	RTW_RET_STATUS ret = RTW_RET_STATUS_SUCCESS;
@@ -620,7 +654,8 @@ RTW_RET_STATUS dns_publish(uint16_t phy_num,
 
 	INFO_PRINT("[rtw_scenario] %s b_ble_trigger_enable=%d\n", __func__, b_ble_trigger_enable);
 
-	rtw_nan_api_get_capability(nan_intf, &nan_cap);
+	/* The capability value is unused. WHC-SDIO cannot return this vendor reply
+	 * synchronously, so querying it here leaves rtw_aware with an empty reply. */
 	INFO_PRINT("[rtw_scenario] %s %d\n", __func__, __LINE__);
 	rtw_nan_api_register_evt_cb(nan_evt_handler);
 	INFO_PRINT("[rtw_scenario] %s %d\n", __func__, __LINE__);
@@ -651,15 +686,21 @@ RTW_RET_STATUS dns_publish(uint16_t phy_num,
 		INFO_PRINT("[rtw_scenario] start ble-trigger scan.\n");
 	} else {
 		/* without using ble-trigger, start nan directly */
+		/* nl80211 changes the NAN interface while wpa_supplicant starts. If NAN
+		 * is already running, cfg80211 stops it during that mode change. */
+		if (info->sec_type == NAN_PMK_SET_BY_PAIRING && _start_wpa_supplicant() != true) {
+			INFO_PRINT("[rtw_scenario] failed to start wpa_supplicant!\n");
+			goto exit;
+		}
+		/* wpa_supplicant -B returns before nl80211 finishes changing the
+		 * interface mode. Let that transition finish before enabling NAN. */
+		if (info->sec_type == NAN_PMK_SET_BY_PAIRING && !external_pasn_enabled())
+			sleep(2);
 		if (rtw_nan_api_start_nan(nan_intf) != RTW_RET_STATUS_SUCCESS) {
 			INFO_PRINT("[rtw_scenario] failed to start NAN!\n");
 			goto exit;
 		}
 		b_nan_start = true;
-		if (info->sec_type == NAN_PMK_SET_BY_PAIRING && _start_wpa_supplicant() != true) {
-			INFO_PRINT("[rtw_scenario] failed to start wpa_supplicant!\n");
-			goto exit;
-		}
 		if (rtw_nan_api_publish(nan_intf, info) != RTW_RET_STATUS_SUCCESS) {
 			INFO_PRINT("[rtw_scenario] failed to start publish service!\n");
 			goto exit;
@@ -680,7 +721,7 @@ RTW_RET_STATUS dns_subscribe(uint16_t phy_num,
 							 struct srvc_info *info,
 							 uint8_t is_bt_trigger)
 {
-	uint16_t nan_cap = 0, i = 0;
+	uint16_t i = 0;
 	char nmi[20] = {0};
 	char self_ipv6[50] = {0};
 	RTW_RET_STATUS ret = RTW_RET_STATUS_SUCCESS;
@@ -710,7 +751,7 @@ RTW_RET_STATUS dns_subscribe(uint16_t phy_num,
 	b_nan_start = false;
 	b_ble_trigger_enable = is_bt_trigger;
 
-	rtw_nan_api_get_capability(nan_intf, &nan_cap);
+	/* See dns_publish(): this unused query has no synchronous SDIO reply. */
 	rtw_nan_api_register_evt_cb(nan_evt_handler);
 	_mac_addr_a2n(info->subscribe_nmi, nmi);
 	for (i = 0; i < MAX_SERVICE_NUM; i++) {
@@ -725,6 +766,13 @@ RTW_RET_STATUS dns_subscribe(uint16_t phy_num,
 	PRINT_MAC_ADDR("[rtw_scenario] subscribe_nmi", info->subscribe_nmi);
 	INFO_PRINT("[rtw_scenario] service_name:%s\n", info->service_name);
 
+	/* Keep the supplicant's nl80211 interface mode setup ahead of NAN start. */
+	if (info->sec_type == NAN_PMK_SET_BY_PAIRING && _start_wpa_supplicant() != true) {
+		INFO_PRINT("[rtw_scenario] failed to start wpa_supplicant!\n");
+		goto exit;
+	}
+	if (info->sec_type == NAN_PMK_SET_BY_PAIRING)
+		sleep(2);
 	/* start nan directly */
 	if (rtw_nan_api_start_nan(nan_intf) != RTW_RET_STATUS_SUCCESS) {
 		INFO_PRINT("[rtw_scenario] %s failed to start NAN!\n", __func__);
@@ -732,11 +780,6 @@ RTW_RET_STATUS dns_subscribe(uint16_t phy_num,
 		goto exit;
 	}
 	b_nan_start = true;
-
-	if (info->sec_type == NAN_PMK_SET_BY_PAIRING && _start_wpa_supplicant() != true) {
-		INFO_PRINT("[rtw_scenario] failed to start wpa_supplicant!\n");
-		goto exit;
-	}
 	ret = rtw_nan_api_subscribe(nan_intf, info);
 	if (info->sec_type == NAN_PMK_SET_BY_PAIRING && info->pairing_info.pasn_pw) {
 		rtw_nan_api_pasn_setpw(NULL, info->pairing_info.pasn_pw, info->pairing_info.pasn_pw_len);

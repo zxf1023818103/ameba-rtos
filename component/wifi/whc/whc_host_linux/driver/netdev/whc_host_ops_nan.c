@@ -99,11 +99,9 @@ static int whc_host_start_nan_ops(struct wiphy *wiphy,
 	band_support = ((conf->bands & BIT(NL80211_BAND_2GHZ)) ? RTW_SUPPORT_BAND_2_4G : 0)
 				   | ((conf->bands & BIT(NL80211_BAND_5GHZ)) ? RTW_SUPPORT_BAND_5G : 0);
 
-	if (whc_host_start_nan(conf->master_pref, band_support) == -1) {
-		ret = -ENOTCONN;
-	}
+	ret = whc_host_start_nan(conf->master_pref, band_support);
 
-	return ret;
+	return ret < 0 ? ret : 0;
 }
 
 void whc_host_stop_nan_ops(struct wiphy *wiphy, struct wireless_dev *wdev)
@@ -203,15 +201,17 @@ static int whc_host_add_nan_func_ops(struct wiphy *wiphy,
 
 	nan_param->instance_id = func->instance_id;
 	nan_param->cookie = func->cookie;
-	func->instance_id = whc_host_add_nan_func(nan_param, func);
+	ret = whc_host_add_nan_func(nan_param, func);
+	if (ret < 0) {
+		goto out;
+	}
+	func->instance_id = ret;
 
 	whc_host_dump_nan_func(func);
 
-	if (buf) {
-		kfree(buf);
-	}
-
-	return ret;
+out:
+	kfree(buf);
+	return ret < 0 ? ret : 0;
 }
 
 void whc_host_del_nan_func_ops(struct wiphy *wiphy,
@@ -239,8 +239,12 @@ static int whc_host_nan_change_conf_ops(struct wiphy *wiphy,
 void whc_host_nan_handle_sdf(u8 type, u8 inst_id, u8 peer_inst_id, u8 *addr, u32 info_len, u8 *info, u64 cookie)
 {
 	struct cfg80211_nan_match_params match_param;
+	struct wireless_dev *wdev = global_idev.pwdev_global[2];
 
 	gfp_t kflags;
+	if (!wdev) {
+		return;
+	}
 
 	kflags = in_atomic() ? GFP_ATOMIC : GFP_KERNEL;
 	memset(&match_param, 0, sizeof(match_param));
@@ -251,7 +255,7 @@ void whc_host_nan_handle_sdf(u8 type, u8 inst_id, u8 peer_inst_id, u8 *addr, u32
 	match_param.info_len = info_len;
 	match_param.info = info;
 	match_param.cookie = cookie;
-	cfg80211_nan_match(global_idev.pwdev_global[1], &match_param, kflags);
+	cfg80211_nan_match(wdev, &match_param, kflags);
 
 }
 

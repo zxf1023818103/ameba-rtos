@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <ctype.h>
 #include <stddef.h>
 #include <sys/stat.h>
 #include "nan_event.h"
@@ -27,6 +28,7 @@ volatile int g_log_file_offset = 0;
 pthread_t tid;
 pthread_t g_detect_fsize_tid;
 static int g_max_event_log_size = MIN_NAN_EVT_LSIZE;
+static char g_evt_header[1024];
 
 void _print_data(uint8_t *start, uint16_t len)
 {
@@ -528,30 +530,54 @@ void _parse_disc_result_nan_attr(uint8_t *attr_list,
 	}
 }
 
+static size_t _parse_evt_hex_line(const char *line, char *data, size_t capacity)
+{
+    const char *p = strstr(line, "vendor event:");
+    size_t count = 0;
+    char *end;
+    unsigned long value;
+
+    if (!p) {
+        return 0;
+    }
+    p += strlen("vendor event:");
+    while (count < capacity) {
+        while (isspace((unsigned char)*p)) {
+            p++;
+        }
+        if (!isxdigit((unsigned char)*p)) {
+            break;
+        }
+        value = strtoul(p, &end, 16);
+        if (end == p || value > 0xff) {
+            break;
+        }
+        data[count++] = (char)value;
+        p = end;
+    }
+    return count;
+}
+
 void _parse_evt_data(char *evt_data, size_t evt_data_size)
 {
-	char str[1024] = {0};
-	char *pch;
-	size_t count = 0;
-	int line = 0;
+    char str[1024];
+    size_t count = _parse_evt_hex_line(g_evt_header, evt_data, evt_data_size);
+    long line_pos;
 
-	while (count < evt_data_size && fgets(str, 1024, g_evt_log_file)) {
-		// e.g. vendor event: 00 01 01 02 73 3e e5 9d 32 de e9 94 4d 3f c6 02
-		pch = strtok(str, ":");
-		if (pch != NULL && strncmp(pch, "vendor event", 12) == 0) {
-			pch = strtok(NULL, " \n");
-			line++;
-			while (count < evt_data_size && pch != NULL) {
-				DEBUG_PRINT("%s ", pch);
-				sscanf(pch, "%2hhx", (unsigned char *)(evt_data + count));
-				count++;
-				pch = strtok(NULL, " \n");
-			}
-			DEBUG_PRINT("\n");
-		}
-	}
-	/*DEBUG_PRINT("[rtw_event] %s: line(%d), evt_data_size(%d)\n",
-	               __func__, line, evt_data_size);*/
+    while (count < evt_data_size) {
+        line_pos = ftell(g_evt_log_file);
+        if (!fgets(str, sizeof(str), g_evt_log_file)) {
+            break;
+        }
+        if (strstr(str, "vendor event " OUI_REALTEK_STR ":")) {
+            fseek(g_evt_log_file, line_pos, SEEK_SET);
+            break;
+        }
+        count += _parse_evt_hex_line(str, evt_data + count, evt_data_size - count);
+    }
+    if (count < evt_data_size) {
+        INFO_PRINT("[rtw_event] short vendor event: %zu/%zu bytes\n", count, evt_data_size);
+    }
 }
 
 void _evt_handler(int evt_id)
@@ -819,6 +845,8 @@ void _evt_handler(int evt_id)
 	break;
 	case RTW_VENDOR_EVT_NAN_PASN_START:
 	case RTW_VENDOR_EVT_NAN_PASN_RX:
+		/* These carry PASN Authentication frames. A NAN-aware supplicant must
+		 * process them and return the Authentication response and derived keys. */
 		break;
 	case RTW_VENDOR_EVT_NAN_BSTRAP_RESULT: {
 		struct vendor_evt_bstrap_result evt_data = {0};
@@ -885,6 +913,7 @@ void _evt_handler(int evt_id)
 		mkdir("/var/lib/nan", 0700);
 		f = fopen("/var/lib/nan/nik_cache", "wb");
 		if (f) {
+			fchmod(fileno(f), 0600);
 			fwrite(&nik_cache_data, sizeof(nik_cache_data), 1, f);
 			fflush(f);
 			fsync(fileno(f));
@@ -901,25 +930,21 @@ void _evt_handler(int evt_id)
 
 void _evt_parser()
 {
-	char str[1024] = {0};
-	char *pch;
+    char str[1024];
+    char *id_start;
 
-	fseek(g_evt_log_file, g_log_file_offset, SEEK_SET);
-	while (fgets(str, 1024, g_evt_log_file)) {
-		// e.g. 1659517346.505874: nan0 (phy #0): vendor event 00e04c:7
-		pch = strtok(str, " :");
-		while (pch != NULL) {
-			if (strncmp(pch, OUI_REALTEK_STR, 6) == 0) {
-				pch = strtok(NULL, " :\n");
-				DEBUG_PRINT("---------------------------------------\n");
-				DEBUG_PRINT("found event: %s\n", pch);
-				_evt_handler(atoi(pch));
-				DEBUG_PRINT("---------------------------------------\n");
-			}
-			pch = strtok(NULL, " :");
-		}
-	}
-	g_log_file_offset = ftell(g_evt_log_file);
+    fseek(g_evt_log_file, g_log_file_offset, SEEK_SET);
+    while (fgets(str, sizeof(str), g_evt_log_file)) {
+        id_start = strstr(str, "vendor event " OUI_REALTEK_STR ":");
+        if (!id_start) {
+            continue;
+        }
+        strncpy(g_evt_header, str, sizeof(g_evt_header) - 1);
+        g_evt_header[sizeof(g_evt_header) - 1] = '\0';
+        id_start += strlen("vendor event " OUI_REALTEK_STR ":");
+        _evt_handler((int)strtol(id_start, NULL, 10));
+    }
+    g_log_file_offset = ftell(g_evt_log_file);
 }
 
 void *_wait_evt_thread(void *arg)
@@ -946,6 +971,7 @@ void *_detect_fsize_thread(void *arg)
 		if (g_log_file_offset > g_max_event_log_size) {
 			rtw_nan_evt_reinit();
 		}
+		sleep(1);
 	}
 	return (void *)0;
 }
@@ -965,8 +991,9 @@ int rtw_nan_evt_init()
 	g_evt_terminate = 0;
 
 	/* 2. start iw event */
-	sprintf(cmd, "%s event -f > %s &", rtw_iw, LOG_FILE_NAME);
+	snprintf(cmd, sizeof(cmd), "umask 077; stdbuf -oL %s event -f > %s &", rtw_iw, LOG_FILE_NAME);
 	system(cmd);
+	chmod(LOG_FILE_NAME, 0600);
 	sleep(1);
 
 	/* 3. open nan_event_log */
@@ -1022,8 +1049,9 @@ void rtw_nan_evt_reinit()
 	system(cmd);
 	sleep(1);
 
-	sprintf(cmd, "%s event -f > %s &", rtw_iw, LOG_FILE_NAME);
+	snprintf(cmd, sizeof(cmd), "umask 077; stdbuf -oL %s event -f > %s &", rtw_iw, LOG_FILE_NAME);
 	system(cmd);
+	chmod(LOG_FILE_NAME, 0600);
 	sleep(1);
 
 	g_evt_log_file = fopen(LOG_FILE_NAME, "r");

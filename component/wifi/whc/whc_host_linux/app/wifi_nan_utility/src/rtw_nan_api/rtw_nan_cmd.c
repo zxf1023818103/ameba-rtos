@@ -3,6 +3,8 @@
 #include <unistd.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/random.h>
+#include <fcntl.h>
 #include "sha256.h"
 #include "rtw_nan_cmd_api.h"
 #include "rtw_nan_cmd.h"
@@ -461,11 +463,43 @@ RTW_RET_STATUS rtw_nan_api_restore_pairing_info()
 RTW_RET_STATUS rtw_nan_api_clear_pairing_info()
 {
 	struct nan_nik_cache_data nik_cache_data = {0};
-	system("rm -r /var/lib/nan");
-	/* Push a zeroed NIK cache to the NP to also drop its in-RAM copy. */
-	send_vendor_cmd(NAN_SUBCMD_SET_NIK_CACHE, &nik_cache_data,
-					sizeof(struct nan_nik_cache_data),
-					tmp_file, nan_intf, rtw_iw);
+	const uint8_t zero_nik[16] = {0};
+	FILE *f = fopen("/var/lib/nan/nik_cache", "rb");
+	int fd, ok;
+
+	/* Firmware restores own_nik verbatim. Clear peers without replacing the
+	 * local identity with an all-zero NIK, which breaks subsequent pairing.
+	 */
+	if (f) {
+		if (fread(&nik_cache_data, sizeof(nik_cache_data), 1, f) != 1 ||
+		    nik_cache_data.version != 1)
+			memset(&nik_cache_data, 0, sizeof(nik_cache_data));
+		fclose(f);
+	}
+	if (!memcmp(nik_cache_data.own_nik, zero_nik, sizeof(zero_nik)) &&
+	    getrandom(nik_cache_data.own_nik, sizeof(zero_nik), 0) !=
+	    sizeof(zero_nik))
+		return RTW_RET_STATUS_ERROR;
+	nik_cache_data.version = 1;
+	memset(nik_cache_data.reserved, 0, sizeof(nik_cache_data.reserved));
+	memset(nik_cache_data.entries, 0, sizeof(nik_cache_data.entries));
+	if (send_vendor_cmd(NAN_SUBCMD_SET_NIK_CACHE, &nik_cache_data,
+			    sizeof(nik_cache_data), tmp_file, nan_intf, rtw_iw) !=
+	    RTW_RET_STATUS_SUCCESS)
+		return RTW_RET_STATUS_ERROR;
+	unlink("/var/lib/nan/pasn_npk");
+	mkdir("/var/lib/nan", 0700);
+	fd = open("/var/lib/nan/nik_cache", O_WRONLY | O_CREAT | O_TRUNC, 0600);
+	if (fd < 0)
+		return RTW_RET_STATUS_ERROR;
+	ok = fchmod(fd, 0600) == 0 &&
+	     write(fd, &nik_cache_data, sizeof(nik_cache_data)) ==
+	     sizeof(nik_cache_data) && fsync(fd) == 0;
+	if (close(fd) < 0)
+		ok = 0;
+	memset(&nik_cache_data, 0, sizeof(nik_cache_data));
+	if (!ok)
+		return RTW_RET_STATUS_ERROR;
 	return RTW_RET_STATUS_SUCCESS;
 }
 
@@ -892,7 +926,6 @@ RTW_RET_STATUS rtw_nan_api_publish(char *intf, struct srvc_info *info)
 	uint32_t input_len = 0;
 	void *input = NULL;
 	uint8_t srv_name_hash[RTW_NAN_SERVICE_NAME_HASH_SIZE] = {0};
-	char tmp_arry[512] = {0};
 	uint8_t gen_srv_info[RTW_NAN_SERVICE_INFO_MAX_LENGTH] = {0};
 	uint16_t gen_srv_info_len = 0;
 
@@ -916,10 +949,7 @@ RTW_RET_STATUS rtw_nan_api_publish(char *intf, struct srvc_info *info)
 						srv_name_hash);
 	memcpy(publish_srv->service_hash, srv_name_hash, RTW_NAN_SERVICE_NAME_HASH_SIZE);
 
-	publish_srv->matching_filter_rx_count = 1;
-	sprintf(tmp_arry, "%s", "bytes used for matching");
-	memcpy(publish_srv->matching_filter_rx[0].filter, tmp_arry, sizeof("bytes used for matching"));
-	publish_srv->matching_filter_rx[0].length = sizeof("bytes used for matching") - 1;
+	/* No service-specific matching filter was requested by this tool. */
 
 	memcpy(publish_srv->name.name, info->service_name, strlen(info->service_name));
 	publish_srv->publish_id = info->publish_id;
@@ -1052,7 +1082,6 @@ RTW_RET_STATUS rtw_nan_api_subscribe(char *intf, struct srvc_info *info)
 	uint32_t input_len = 0;
 	void *input = NULL;
 	uint8_t srv_name_hash[RTW_NAN_SERVICE_NAME_HASH_SIZE] = {0};
-	char tmp_arry[512] = {0};
 	uint8_t gen_srv_info[RTW_NAN_SERVICE_INFO_MAX_LENGTH] = {0};
 	uint16_t gen_srv_info_len = 0;
 
@@ -1076,10 +1105,7 @@ RTW_RET_STATUS rtw_nan_api_subscribe(char *intf, struct srvc_info *info)
 						srv_name_hash);
 	memcpy(subscribe_srv->service_hash, srv_name_hash, RTW_NAN_SERVICE_NAME_HASH_SIZE);
 
-	subscribe_srv->matching_filter_tx_count = 1;
-	sprintf(tmp_arry, "%s", "bytes used for matching");
-	memcpy(subscribe_srv->matching_filter_tx[0].filter, tmp_arry, sizeof("bytes used for matching"));
-	subscribe_srv->matching_filter_tx[0].length = sizeof("bytes used for matching") - 1;
+	/* Match the service ID without an application-specific filter. */
 
 	memcpy(subscribe_srv->name.name, info->service_name, strlen(info->service_name));
 	subscribe_srv->subscribe_id = info->subscribe_id;

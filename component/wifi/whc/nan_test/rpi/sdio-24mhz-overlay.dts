@@ -1,0 +1,13 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "brcm,bcm2835";
+
+    fragment@0 {
+        target-path = "/soc/mmc@7e300000";
+        __overlay__ {
+            max-frequency = <24000000>;
+        };
+    };
+};

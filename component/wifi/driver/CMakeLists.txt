@@ -157,6 +157,9 @@ ameba_list_append_if(CONFIG_RLE1509 public_includes
 
 set(release_target_name wlan)
 
+option(AMEBA_GREEN2_NAN_PREBUILT_LIBRARY
+    "Use the packaged Green2 NAN fixed archive instead of building wrappers" OFF)
+
 if(CONFIG_MP_INCLUDED)
     if(CONFIG_MP_SHRINK)
         set(LIB_NAME_MP_SUFFIX _mp_shrink)
@@ -181,6 +184,22 @@ if(CONFIG_WHC_DEV)
     endif()
 elseif(CONFIG_WHC_NONE)
     set(release_target_name wifi_single_core${LIB_NAME_WPA_OFFLOAD_SUFFIX}${LIB_NAME_TCPIP_SUFFIX}${LIB_NAME_MP_SUFFIX})
+endif()
+
+if(AMEBA_GREEN2_NAN_PREBUILT_LIBRARY AND CONFIG_WHC_DEV)
+    if(NOT AMEBA_GREEN2_NAN_PASN_CIPHER_FIX OR NOT CONFIG_AMEBAGREEN2 OR
+       NOT CONFIG_WIFI_NAN_ENABLE OR NOT CONFIG_WHC_INTF_SPDIO OR
+       NOT release_target_name STREQUAL "wifi_whc_dev")
+        message(FATAL_ERROR "Prebuilt NAN library requires the verified Green2 NAN/SPDIO configuration and cipher fix option")
+    endif()
+    set(release_target_name wifi_whc_dev_nan_fixed)
+    set(nan_fixed_lib "${c_SDK_LIB_APPLICATION_DIR}/lib_${release_target_name}.a")
+    file(STRINGS "${nan_fixed_lib}.sha256" nan_fixed_manifest LIMIT_COUNT 1)
+    string(SUBSTRING "${nan_fixed_manifest}" 0 64 nan_fixed_expected)
+    file(SHA256 "${nan_fixed_lib}" nan_fixed_actual)
+    if(NOT nan_fixed_actual STREQUAL nan_fixed_expected)
+        message(FATAL_ERROR "Green2 NAN fixed archive checksum mismatch")
+    endif()
 endif()
 
 if(CONFIG_WLAN AND (CONFIG_WHC_DEV OR CONFIG_WHC_NONE))

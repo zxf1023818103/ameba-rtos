@@ -2,7 +2,7 @@
 
 #include <whc_host_linux.h>
 
-void whc_host_send_event(u32 id, u8 *param, u32 param_len, u8 *ret, u32 ret_len)
+int whc_host_send_event(u32 id, u8 *param, u32 param_len, u8 *ret, u32 ret_len)
 {
 #ifdef CONFIG_WHC_WIFI_API_PATH
 	struct event_priv_t *event_priv = &global_idev.event_priv;
@@ -13,15 +13,16 @@ void whc_host_send_event(u32 id, u8 *param, u32 param_len, u8 *ret, u32 ret_len)
 	u8 *buf;
 	u32 buf_len;
 	u32 timeout;
+	int status = -EIO;
 
 	if (!global_idev.host_init_done) {
 		dev_err(global_idev.pwhc_dev, "Host api err: wifi not init\n");
-		return;
+		return -ENODEV;
 	}
 
 #ifdef CONFIG_WHC_HCI_USB
 	if (whc_usb_host_send_event_check(id) < 0) {
-		return;
+		return -EOPNOTSUPP;
 	}
 #endif
 	mutex_lock(&(event_priv->send_mutex));
@@ -53,6 +54,7 @@ void whc_host_send_event(u32 id, u8 *param, u32 param_len, u8 *ret, u32 ret_len)
 #endif
 	} else {
 		dev_err(global_idev.pwhc_dev, "%s can't alloc buffer!\n", __func__);
+		status = -ENOMEM;
 		/* nothing was sent, but drop a stale count so it cannot leak into the
 		 * next call */
 		spin_lock(&event_priv->api_ret_lock);
@@ -79,6 +81,7 @@ void whc_host_send_event(u32 id, u8 *param, u32 param_len, u8 *ret, u32 ret_len)
 
 	if (wait_ret == 0) {
 		dev_err(global_idev.pwhc_dev, "wait ret value timeout!!\n");
+		status = -ETIMEDOUT;
 		goto exit;
 	}
 
@@ -101,9 +104,13 @@ void whc_host_send_event(u32 id, u8 *param, u32 param_len, u8 *ret, u32 ret_len)
 
 	if (ret_msg->api_id != id) {
 		dev_err(global_idev.pwhc_dev, "Host API return value id not match!\n");
+		status = -EPROTO;
 	} else if (ret_len != 0 && ret_msg->data_len < ret_len) {
 		dev_err(global_idev.pwhc_dev, "Host API 0x%x ret too short: %u < %u!\n",
 				id, ret_msg->data_len, ret_len);
+		status = -EMSGSIZE;
+	} else {
+		status = 0;
 	}
 
 exit:
@@ -115,12 +122,14 @@ exit:
 	mutex_unlock(&(event_priv->send_mutex));
 
 	dev_dbg(global_idev.pwhc_dev, "-----HOST API %x CALLING DONE\n", id);
+	return status;
 #else
 	(void)id;
 	(void)param;
 	(void)param_len;
 	(void)ret;
 	(void)ret_len;
+	return -EOPNOTSUPP;
 #endif
 }
 
@@ -563,14 +572,13 @@ int whc_host_get_phy_stats(u8 wlan_idx, const u8 *mac_addr, union rtw_phy_stats 
 
 int whc_host_get_setting(unsigned char wlan_idx, dma_addr_t setting_addr)
 {
-	int ret = 0;
 	u32 param_buf[1];
 
 	param_buf[0] = wlan_idx;
 
-	whc_host_send_event(WHC_API_WIFI_GET_SETTING, (u8 *)param_buf, sizeof(param_buf), (u8 *)setting_addr, sizeof(struct rtw_wifi_setting));
-
-	return ret;
+	return whc_host_send_event(WHC_API_WIFI_GET_SETTING, (u8 *)param_buf,
+				   sizeof(param_buf), (u8 *)setting_addr,
+				   sizeof(struct rtw_wifi_setting));
 }
 
 int whc_host_channel_switch(dma_addr_t csa_param_addr)

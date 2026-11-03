@@ -811,6 +811,12 @@ static int whc_host_get_channel_ops(struct wiphy *wiphy,
 
 	dev_dbg(global_idev.pwhc_dev, "[whc]: %s", __func__);
 
+	/* NAN has no single operating channel, and wifi_get_setting only accepts
+	 * the STA and SoftAP indices. Do not query it with the NAN port index. */
+	if (wdev && wdev->iftype == NL80211_IFTYPE_NAN) {
+		return -EOPNOTSUPP;
+	}
+
 	whc_host_dev_driver_is_mp(&is_mp);
 	if (is_mp == 1) {
 		return -EPERM;
@@ -819,6 +825,11 @@ static int whc_host_get_channel_ops(struct wiphy *wiphy,
 	pnetdev = wdev_to_ndev(wdev);
 	if (!pnetdev || !netif_running(pnetdev)) {
 		return -EPERM;
+	}
+	/* The SoftAP netdev can be administratively up before an AP starts.
+	 * wifi_get_setting(1) returns an error until it has a channel. */
+	if (wdev->iftype == NL80211_IFTYPE_AP && !netif_carrier_ok(pnetdev)) {
+		return -ENODATA;
 	}
 
 #ifdef CONFIG_P2P

@@ -55,6 +55,48 @@ set(private_includes)                #private include directories, NOTE: relativ
 set(private_definitions)             #private definitions
 set(private_compile_options)         #private compile_options
 
+option(AMEBA_GREEN2_NAN_PASN_CIPHER_FIX
+    "Experimental PASN response cipher fix for the verified Green2 WHC library" OFF)
+set(green2_nan_cipher_fix_active FALSE)
+if(AMEBA_GREEN2_NAN_PASN_CIPHER_FIX AND CONFIG_AMEBAGREEN2 AND CONFIG_WHC_DEV)
+    if(NOT CONFIG_WIFI_NAN_ENABLE OR NOT CONFIG_WHC_INTF_SPDIO OR
+       CONFIG_WHC_WPA_SUPPLICANT_OFFLOAD OR CONFIG_WHC_DEV_TCPIP_KEEPALIVE OR CONFIG_MP_INCLUDED)
+        message(FATAL_ERROR "Green2 NAN cipher fix requires the verified NAN/SPDIO WHC configuration")
+    endif()
+    # The vendor's NDP types are private. Fail closed if their object changes.
+    set(nan_abi_object "${CMAKE_CURRENT_BINARY_DIR}/nan_cipher_abi_check.o")
+    execute_process(COMMAND ${CMAKE_AR} p
+        "${c_SDK_LIB_APPLICATION_DIR}/lib_wifi_whc_dev.a" rtw_nan_data_ndp.o
+        OUTPUT_FILE "${nan_abi_object}" RESULT_VARIABLE nan_abi_result)
+    if(NOT nan_abi_result EQUAL 0)
+        message(FATAL_ERROR "Cannot inspect Green2 NDP library ABI")
+    endif()
+    file(SHA256 "${nan_abi_object}" nan_abi_sha256)
+    if(NOT nan_abi_sha256 STREQUAL "f749782b63c6d8c658709943c2c7d1d79522328d757aed3a37e0c174313db4ec")
+        message(FATAL_ERROR "Unverified Green2 NDP object: ${nan_abi_sha256}")
+    endif()
+    set(green2_nan_cipher_fix_active TRUE)
+    if(NOT AMEBA_GREEN2_NAN_PREBUILT_LIBRARY)
+        list(APPEND private_sources whc_dev/whc_dev_nan_pasn_cipher_fix.c)
+        # The same experiment also fixes the proven u32 -> u8 FAW bitmap loss.
+        find_package(Python3 REQUIRED COMPONENTS Interpreter)
+        set(nan_faw_fix_object "${CMAKE_CURRENT_BINARY_DIR}/nan_faw_id_fix.o")
+        execute_process(COMMAND ${Python3_EXECUTABLE}
+            "${CMAKE_CURRENT_SOURCE_DIR}/whc_dev/make_nan_faw_id_fix.py"
+            "${CMAKE_AR}" "${CMAKE_OBJCOPY}"
+            "${c_SDK_LIB_APPLICATION_DIR}/lib_wifi_whc_dev.a"
+            "${nan_faw_fix_object}" RESULT_VARIABLE nan_faw_fix_result)
+        if(NOT nan_faw_fix_result EQUAL 0)
+            message(FATAL_ERROR "Cannot generate verified Green2 FAW ID fix")
+        endif()
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/whc_dev/make_nan_faw_id_fix.py"
+            "${c_SDK_LIB_APPLICATION_DIR}/lib_wifi_whc_dev.a")
+        set_source_files_properties("${nan_faw_fix_object}" PROPERTIES EXTERNAL_OBJECT TRUE)
+        list(APPEND private_sources "${nan_faw_fix_object}")
+    endif()
+endif()
+
 #------------------------------#
 # Component private part, user config begin
 set(target_name)
@@ -301,6 +343,11 @@ if(private_sources)
             p_COMPILE_OPTIONS
                 ${private_compile_options}
         )
+        if(green2_nan_cipher_fix_active)
+            target_link_options(${c_CURRENT_TARGET_NAME} INTERFACE
+                "-Wl,--wrap=rtw_nan_ndp_response_prehandle"
+                "-Wl,--wrap=rtw_nan_schdl_faw_act_add")
+        endif()
     endif()
 
 endif()

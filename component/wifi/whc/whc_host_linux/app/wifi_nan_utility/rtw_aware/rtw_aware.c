@@ -151,6 +151,39 @@ static unsigned int g_num_service = 1;
 struct nan_service_mgnt g_nan_service_mgnt[MAX_SERVICE_NUM] = {0};
 static unsigned int g_test_cnt = 0;
 
+void dns_evt_pasn_result(struct dns_evt_pasn_result *info, uint32_t len);
+
+/* Test bridge for responder PASN completion when Green2 omits event 33. */
+static void check_local_pasn_result(void)
+{
+	const char *path = getenv("GREEN2_PASN_RESULT_FILE");
+	uint8_t result_data[1 + ETH_ALEN];
+	FILE *fp;
+	unsigned int i;
+
+	if (!path || !*path || !(fp = fopen(path, "rb")))
+		return;
+	if (fread(result_data, 1, sizeof(result_data), fp) !=
+	    sizeof(result_data)) {
+		fclose(fp);
+		unlink(path);
+		return;
+	}
+	fclose(fp);
+	unlink(path);
+	for (i = 0; i < g_num_service; i++) {
+		struct nan_data_mgnt *mgnt = &g_nan_service_mgnt[i].nan_mgnt;
+		if (mgnt->nan_status != NAN_STATUS_PASN_START ||
+		    memcmp(mgnt->service.pairing_info.peer_nmi,
+			   result_data + 1, ETH_ALEN))
+			continue;
+		RTW_INFO("PASN responder completion from local bridge\n");
+		dns_local_pasn_result(result_data + 1, result_data[0]);
+		return;
+	}
+	RTW_WARN("discarding PASN completion for inactive peer\n");
+}
+
 
 bool is_array_empty(unsigned char *input, unsigned int len)
 {
@@ -217,7 +250,16 @@ void wait_time(uint16_t waiting_sec)
 	double diff_s = 0;
 	time_t service_start_t = time(NULL);
 
+	if (waiting_sec == 0) {
+		while (!sig_flag) {
+			check_local_pasn_result();
+			sleep(1);
+		}
+		return;
+	}
+
 	while (waiting_sec) {
+		check_local_pasn_result();
 		diff_s = difftime(time(NULL), service_start_t);
 		if (diff_s > waiting_sec || sig_flag) {
 			sig_flag = 1;
@@ -482,7 +524,11 @@ void parse_data_indication(struct nan_data_mgnt *nan_data_mgnt, struct dns_evt_d
 		if (nan_data_mgnt->service.sec_type == NAN_PMK_SET_BY_USER_PASSPRHRAE) {
 			nan_data_mgnt->data_path.sec_type = NAN_PMK_SET_BY_USER_PASSPRHRAE;
 		}
-		if (nan_data_mgnt->nan_status == NAN_STATUS_GET_PASN_RESULT) {
+		/* Verification can arrive after the previous NDP state was cleared,
+		 * and its host notification may race this indication. The service's
+		 * configured security type determines which PMK the firmware uses.
+		 */
+		if (nan_data_mgnt->service.sec_type == NAN_PMK_SET_BY_PAIRING) {
 			nan_data_mgnt->data_path.sec_type = NAN_PMK_SET_BY_PAIRING;
 		}
 	}

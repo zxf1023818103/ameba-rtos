@@ -115,5 +115,7 @@ extern RTW_RET_STATUS dns_pairing_start(struct pairing_info *pairing_info);
 extern RTW_RET_STATUS dns_pairing_setpw(uint8_t *pairing_peer_nmi, char *pw, uint8_t pw_len);
 
 extern void dns_register_evt_cb(rtw_dns_evt_cb cb);
+extern void dns_local_pasn_result(const uint8_t peer_nmi[ETH_ALEN],
+				  uint8_t pairing_type);
 
 #endif
