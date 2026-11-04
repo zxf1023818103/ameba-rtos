@@ -63,6 +63,11 @@ if(AMEBA_GREEN2_NAN_PASN_CIPHER_FIX AND CONFIG_AMEBAGREEN2 AND CONFIG_WHC_DEV)
        CONFIG_WHC_WPA_SUPPLICANT_OFFLOAD OR CONFIG_WHC_DEV_TCPIP_KEEPALIVE OR CONFIG_MP_INCLUDED)
         message(FATAL_ERROR "Green2 NAN cipher fix requires the verified NAN/SPDIO WHC configuration")
     endif()
+    # The wrappers use private layouts across NDL, NDP and peer helpers.
+    file(SHA256 "${c_SDK_LIB_APPLICATION_DIR}/lib_wifi_whc_dev.a" nan_vendor_sha256)
+    if(NOT nan_vendor_sha256 STREQUAL "9ade71dee6186bfb5bdc634869d577e38746971bcbf09d908d87a87015cdbe6a")
+        message(FATAL_ERROR "Unverified Green2 NAN library: ${nan_vendor_sha256}")
+    endif()
     # The vendor's NDP types are private. Fail closed if their object changes.
     set(nan_abi_object "${CMAKE_CURRENT_BINARY_DIR}/nan_cipher_abi_check.o")
     execute_process(COMMAND ${CMAKE_AR} p
@@ -77,7 +82,11 @@ if(AMEBA_GREEN2_NAN_PASN_CIPHER_FIX AND CONFIG_AMEBAGREEN2 AND CONFIG_WHC_DEV)
     endif()
     set(green2_nan_cipher_fix_active TRUE)
     if(NOT AMEBA_GREEN2_NAN_PREBUILT_LIBRARY)
-        list(APPEND private_sources whc_dev/whc_dev_nan_pasn_cipher_fix.c)
+        list(APPEND private_sources whc_dev/whc_dev_nan_pasn_cipher_fix.c
+            whc_dev/whc_dev_nan_bootstrap_fix.c
+            whc_dev/whc_dev_nan_ndl_peer_fix.c
+            whc_dev/whc_dev_nan_ndl_immutable_fix.c
+            whc_dev/whc_dev_nan_ndc_control_fix.c)
         # The same experiment also fixes the proven u32 -> u8 FAW bitmap loss.
         find_package(Python3 REQUIRED COMPONENTS Interpreter)
         set(nan_faw_fix_object "${CMAKE_CURRENT_BINARY_DIR}/nan_faw_id_fix.o")
@@ -94,6 +103,32 @@ if(AMEBA_GREEN2_NAN_PASN_CIPHER_FIX AND CONFIG_AMEBAGREEN2 AND CONFIG_WHC_DEV)
             "${c_SDK_LIB_APPLICATION_DIR}/lib_wifi_whc_dev.a")
         set_source_files_properties("${nan_faw_fix_object}" PROPERTIES EXTERNAL_OBJECT TRUE)
         list(APPEND private_sources "${nan_faw_fix_object}")
+        set(nan_bootstrap_object "${CMAKE_CURRENT_BINARY_DIR}/nan_bootstrap_fix.o")
+        execute_process(COMMAND ${Python3_EXECUTABLE}
+            "${CMAKE_CURRENT_SOURCE_DIR}/whc_dev/make_nan_bootstrap_fix.py"
+            "${CMAKE_AR}" "${CMAKE_OBJCOPY}"
+            "${c_SDK_LIB_APPLICATION_DIR}/lib_wifi_whc_dev.a"
+            "${nan_bootstrap_object}" RESULT_VARIABLE nan_bootstrap_result)
+        if(NOT nan_bootstrap_result EQUAL 0)
+            message(FATAL_ERROR "Cannot generate verified Green2 bootstrap RX fix")
+        endif()
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/whc_dev/make_nan_bootstrap_fix.py")
+        set_source_files_properties("${nan_bootstrap_object}" PROPERTIES EXTERNAL_OBJECT TRUE)
+        list(APPEND private_sources "${nan_bootstrap_object}")
+        set(nan_ndl_object "${CMAKE_CURRENT_BINARY_DIR}/nan_ndl_peer_fix.o")
+        execute_process(COMMAND ${Python3_EXECUTABLE}
+            "${CMAKE_CURRENT_SOURCE_DIR}/whc_dev/make_nan_ndl_peer_fix.py"
+            "${CMAKE_AR}" "${CMAKE_OBJCOPY}"
+            "${c_SDK_LIB_APPLICATION_DIR}/lib_wifi_whc_dev.a"
+            "${nan_ndl_object}" RESULT_VARIABLE nan_ndl_result)
+        if(NOT nan_ndl_result EQUAL 0)
+            message(FATAL_ERROR "Cannot generate verified Green2 NDL peer fix")
+        endif()
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/whc_dev/make_nan_ndl_peer_fix.py")
+        set_source_files_properties("${nan_ndl_object}" PROPERTIES EXTERNAL_OBJECT TRUE)
+        list(APPEND private_sources "${nan_ndl_object}")
     endif()
 endif()
 
@@ -346,7 +381,11 @@ if(private_sources)
         if(green2_nan_cipher_fix_active)
             target_link_options(${c_CURRENT_TARGET_NAME} INTERFACE
                 "-Wl,--wrap=rtw_nan_ndp_response_prehandle"
-                "-Wl,--wrap=rtw_nan_schdl_faw_act_add")
+                "-Wl,--wrap=rtw_nan_schdl_faw_act_add"
+                "-Wl,--wrap=rtw_nan_sdf_rx"
+                "-Wl,--wrap=rtw_nan_ndl_nego_rx"
+                "-Wl,--wrap=rtw_nan_ndl_attri_construct"
+                "-Wl,--wrap=rtw_nan_ndc_attri_contruct")
         endif()
     endif()
 

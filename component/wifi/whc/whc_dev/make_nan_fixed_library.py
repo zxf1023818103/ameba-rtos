@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Package the verified Green2 vendor library and both NAN function wrappers.
+"""Package the verified Green2 vendor library and NAN function wrappers.
 
-The result is linked whole-archive with --wrap for the two functions, exactly
+The result is linked whole-archive with --wrap for the patched functions, exactly
 as in the source-build path. Original vendor members remain byte-identical.
 Use the SDK's ASDK 12.3.1 toolchain to reproduce the checked-in archive.
 """
@@ -34,6 +34,8 @@ def main():
         tmp = Path(tmp)
         cipher = tmp / "whc_dev_nan_pasn_cipher_fix.o"
         faw = tmp / "nan_faw_id_fix.o"
+        bootstrap = tmp / "nan_bootstrap_fix.o"
+        bootstrap_gate = tmp / "whc_dev_nan_bootstrap_fix.o"
         subprocess.run([
             args.cross_compile + "gcc", "-std=c11", "-Os", "-g0",
             "-mthumb", "-march=armv8.1-m.main", "-mcmse",
@@ -47,10 +49,53 @@ def main():
             args.cross_compile + "ar", args.cross_compile + "objcopy",
             str(source), str(faw),
         ], check=True)
+        subprocess.run([
+            args.cross_compile + "gcc", "-std=c11", "-Os", "-g0",
+            "-mthumb", "-march=armv8.1-m.main", "-mcmse",
+            "-fno-builtin", "-ffunction-sections", "-fdata-sections",
+            "-Wall", "-Wextra", "-Werror", "-c",
+            "whc_dev_nan_bootstrap_fix.c", "-o", str(bootstrap_gate),
+        ], cwd=srcdir, check=True)
+        subprocess.run([
+            sys.executable, str(srcdir / "make_nan_bootstrap_fix.py"),
+            args.cross_compile + "ar", args.cross_compile + "objcopy",
+            str(source), str(bootstrap),
+        ], check=True)
+        ndl = tmp / "nan_ndl_peer_fix.o"
+        ndl_gate = tmp / "whc_dev_nan_ndl_peer_fix.o"
+        subprocess.run([
+            args.cross_compile + "gcc", "-std=c11", "-Os", "-g0",
+            "-mthumb", "-march=armv8.1-m.main", "-mcmse",
+            "-fno-builtin", "-ffunction-sections", "-fdata-sections",
+            "-Wall", "-Wextra", "-Werror", "-c",
+            "whc_dev_nan_ndl_peer_fix.c", "-o", str(ndl_gate),
+        ], cwd=srcdir, check=True)
+        subprocess.run([
+            sys.executable, str(srcdir / "make_nan_ndl_peer_fix.py"),
+            args.cross_compile + "ar", args.cross_compile + "objcopy",
+            str(source), str(ndl),
+        ], check=True)
+        immutable = tmp / "whc_dev_nan_ndl_immutable_fix.o"
+        subprocess.run([
+            args.cross_compile + "gcc", "-std=c11", "-Os", "-g0",
+            "-mthumb", "-march=armv8.1-m.main", "-mcmse",
+            "-fno-builtin", "-ffunction-sections", "-fdata-sections",
+            "-Wall", "-Wextra", "-Werror", "-c",
+            "whc_dev_nan_ndl_immutable_fix.c", "-o", str(immutable),
+        ], cwd=srcdir, check=True)
         archive = tmp / output.name
+        ndc_control = tmp / "whc_dev_nan_ndc_control_fix.o"
+        subprocess.run([
+            args.cross_compile + "gcc", "-std=c11", "-Os", "-g0",
+            "-mthumb", "-march=armv8.1-m.main", "-mcmse",
+            "-fno-builtin", "-ffunction-sections", "-fdata-sections",
+            "-Wall", "-Wextra", "-Werror", "-c",
+            "whc_dev_nan_ndc_control_fix.c", "-o", str(ndc_control),
+        ], cwd=srcdir, check=True)
         shutil.copyfile(source, archive)
         subprocess.run([args.cross_compile + "ar", "rD", str(archive),
-                        str(cipher), str(faw)], check=True)
+                        str(cipher), str(faw), str(bootstrap), str(bootstrap_gate),
+                        str(ndl), str(ndl_gate), str(immutable), str(ndc_control)], check=True)
         subprocess.run([args.cross_compile + "ranlib", "-D", str(archive)], check=True)
         shutil.copyfile(archive, output)
     digest = hashlib.sha256(output.read_bytes()).hexdigest()

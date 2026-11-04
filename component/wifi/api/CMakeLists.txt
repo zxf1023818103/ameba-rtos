@@ -47,6 +47,14 @@ set(private_includes)                #private include directories, NOTE: relativ
 set(private_definitions)             #private definitions
 set(private_compile_options)         #private compile_options
 
+option(AMEBA_GREEN2_NAN_2G_ONLY "Restrict the dedicated Green2 NAN bench to 2.4 GHz" OFF)
+if(AMEBA_GREEN2_NAN_2G_ONLY)
+    if(NOT CONFIG_AMEBAGREEN2 OR NOT CONFIG_WIFI_NAN_ENABLE OR NOT CONFIG_WHC_DEV)
+        message(FATAL_ERROR "NAN 2.4 GHz bench requires Green2 WHC device with NAN")
+    endif()
+    list(APPEND private_definitions AMEBA_GREEN2_NAN_2G_ONLY=1)
+endif()
+
 #------------------------------#
 # Component private part, user config begin
 

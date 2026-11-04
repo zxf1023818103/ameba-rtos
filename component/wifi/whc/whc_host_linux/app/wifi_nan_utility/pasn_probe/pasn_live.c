@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <linux/nl80211.h>
@@ -83,6 +84,10 @@ struct bridge {
 	u8 verified_peer_pmkid[16];
 	bool peer_pmkid_valid;
 	unsigned int auth2_sent;
+	u8 auth1_frame[AUTH_MAX], auth2_frame[AUTH_MAX];
+	size_t auth1_len, auth2_len;
+	struct timespec auth1_started;
+	bool keys_installed;
 };
 
 static int store_npk(struct bridge *b)
@@ -259,7 +264,7 @@ static int send_mgmt(void *ctx, const u8 *frame, size_t len, int noack,
 	int ret;
 
 	(void) noack; (void) freq; (void) wait;
-	if (len < 30 || frame[0] != 0xb0 || frame[1] != 0 ||
+	if (len < 30 || len > AUTH_MAX || frame[0] != 0xb0 || frame[1] != 0 ||
 	    frame[24] != 7 || frame[26] != 2 || frame[28] != 0 ||
 	    frame[29] != 0 || memcmp(frame + 4, b->peer, 6) ||
 	    memcmp(frame + 10, b->own, 6)) {
@@ -285,6 +290,9 @@ static int send_mgmt(void *ctx, const u8 *frame, size_t len, int noack,
 		return -1;
 	}
 	b->auth2_sent++;
+	if (frame != b->auth2_frame)
+		memcpy(b->auth2_frame, frame, len);
+	b->auth2_len = len;
 	printf("Auth2 submitted: %zu bytes, peer=" MACSTR "\n",
 	       len, MAC2STR(b->peer));
 	fflush(stdout);
@@ -372,12 +380,157 @@ static void reset_session(struct bridge *b)
 	b->pasn = NULL;
 	b->pt = NULL;
 	b->auth2_sent = 0;
+	b->auth1_len = b->auth2_len = 0;
+	b->keys_installed = false;
+	memset(b->auth1_frame, 0, sizeof(b->auth1_frame));
+	memset(b->auth2_frame, 0, sizeof(b->auth2_frame));
 	b->pairing_type = 0;
 	b->peer_pmkid_valid = false;
 	memset(b->verified_peer_pmkid, 0, sizeof(b->verified_peer_pmkid));
 	memset(b->own, 0, sizeof(b->own));
 	memset(b->peer, 0, sizeof(b->peer));
 	memset(b->bssid, 0, sizeof(b->bssid));
+}
+
+/* After a previous verification, Green2 may label a new PIN Auth1 as
+ * verification. Only recognize an unambiguous SAE setup on the wire: no
+ * cached PMKID/NIRA, SAE commit, matching PASN parameters and bootstrap IE.
+ * This selects the handshake; libpasn still authenticates the PIN and MIC.
+ */
+static bool auth1_is_sae_setup(const u8 *frame, size_t len,
+			       const u8 **npba, size_t *npba_len)
+{
+	bool rsn_seen = false, wrapped_seen = false, params_seen = false;
+	bool bootstrap_seen = false;
+	size_t pos = offsetof(struct ieee80211_mgmt, u.auth.variable);
+	struct wpa_ie_data rsn;
+	struct wpa_pasn_params_data params;
+
+	if (!frame || len < pos)
+		return false;
+	while (pos < len) {
+		const u8 *ie = frame + pos;
+		const u8 *data = ie + 2;
+		size_t n;
+		if (len - pos < 2 || (n = ie[1]) > len - pos - 2)
+			return false;
+		if (ie[0] == WLAN_EID_RSN) {
+			if (rsn_seen || wpa_parse_wpa_ie_rsn(ie, n + 2, &rsn) ||
+			    rsn.key_mgmt != WPA_KEY_MGMT_SAE || rsn.num_pmkid ||
+			    rsn.pairwise_cipher != WPA_CIPHER_CCMP)
+				return false;
+			rsn_seen = true;
+		} else if (ie[0] == WLAN_EID_EXTENSION && n) {
+			if (data[0] == WLAN_EID_EXT_WRAPPED_DATA) {
+				if (wrapped_seen || n < 9 ||
+				    WPA_GET_LE16(data + 1) != WLAN_AUTH_SAE ||
+				    WPA_GET_LE16(data + 3) != 1 ||
+				    WPA_GET_LE16(data + 5) != WLAN_STATUS_SAE_HASH_TO_ELEMENT ||
+				    WPA_GET_LE16(data + 7) != 19)
+					return false;
+				wrapped_seen = true;
+			} else if (data[0] == WLAN_EID_EXT_PASN_PARAMS) {
+				if (params_seen || n > 253 ||
+				    wpa_pasn_parse_parameter_ie(ie, n + 2, false, &params) ||
+				    params.wrapped_data_format != WPA_PASN_WRAPPED_DATA_SAE ||
+				    params.group != 19 || !params.pubkey_len)
+					return false;
+				params_seen = true;
+			}
+		} else if (ie[0] == WLAN_EID_VENDOR_SPECIFIC && n >= 4 &&
+			   !memcmp(data, "\x50\x6f\x9a\x13", 4)) {
+			size_t a = 4;
+			while (a < n) {
+				u16 size;
+				if (n - a < 3 || (size = WPA_GET_LE16(data + a + 1)) > n - a - 3)
+					return false;
+				if (data[a] == NAN_ATTR_NIRA)
+					return false;
+				if (data[a] == NAN_ATTR_NPBA) {
+					if (bootstrap_seen || size < 5)
+						return false;
+					bootstrap_seen = true;
+					if (npba) *npba = data + a;
+					if (npba_len) *npba_len = 3 + size;
+				}
+				a += 3 + size;
+			}
+		}
+		pos += 2 + n;
+	}
+	return rsn_seen && wrapped_seen && params_seen && bootstrap_seen;
+}
+
+/* The stale firmware state affects the Auth2 attributes as well as the event
+ * type. Keep its local CSIA (including publish IDs), replace verification NIRA
+ * with local DCEA and echo the setup NPBA. hostap's nan_bootstrap_rx_request()
+ * saves the initiator's NPBA for nan_pairing_prepare_pasn_elems() in this role.
+ * Build separately so a malformed/oversized event is never partially changed.
+ */
+static int correct_setup_event(struct pasn_start_event *e)
+{
+	u8 attrs[ATTR_MAX], dcea[] = { NAN_ATTR_DCEA, 2, 0, 0,
+		NAN_DEV_CAPA_EXT_INFO_1_PAIRING_SETUP };
+	const u8 *npba = NULL;
+	size_t npba_len = 0, pos = 0, used = 0;
+	bool csia_seen = false, dcea_seen = false;
+
+	if (e->frame_len > AUTH_MAX || e->attrs_len > ATTR_MAX)
+		return -1;
+	if (e->pairing_type != PAIRING_VERIFICATION ||
+	    !auth1_is_sae_setup(e->frame, e->frame_len, &npba, &npba_len))
+		return 0;
+	if (e->nik_caching)
+		dcea[4] |= NAN_DEV_CAPA_EXT_INFO_1_NPK_NIK_CACHING;
+	while (pos < e->attrs_len) {
+		const u8 *a = e->attrs + pos;
+		size_t n;
+		if (e->attrs_len - pos < 3 ||
+		    (n = WPA_GET_LE16(a + 1)) > e->attrs_len - pos - 3)
+			return -1;
+		if (a[0] == NAN_ATTR_CSIA) {
+			if (csia_seen || n < 3 || !(n & 1))
+				return -1;
+			csia_seen = true;
+		}
+		if (a[0] == NAN_ATTR_DCEA) {
+			if (dcea_seen || n != 2)
+				return -1;
+			dcea_seen = true;
+			dcea[3] = a[3]; /* local regulatory capability, if supplied */
+		} else if (a[0] != NAN_ATTR_NIRA && a[0] != NAN_ATTR_NPBA) {
+			memcpy(attrs + used, a, n + 3);
+			used += n + 3; /* subset of the already bounded event */
+		}
+		pos += n + 3;
+	}
+	if (!csia_seen || sizeof(dcea) + npba_len > sizeof(attrs) - used)
+		return -1;
+	memcpy(attrs + used, dcea, sizeof(dcea));
+	used += sizeof(dcea);
+	memcpy(attrs + used, npba, npba_len);
+	used += npba_len;
+	memcpy(e->attrs, attrs, used);
+	e->attrs_len = used;
+	e->pairing_type = PAIRING_SETUP;
+	return 1;
+}
+
+static bool auth1_is_retry(const struct bridge *b,
+			   const struct pasn_start_event *e)
+{
+	struct timespec now;
+	if (!b->pasn || !b->auth2_len || b->auth1_len != e->frame_len ||
+	    e->frame_len < 30 || e->frame_len > AUTH_MAX ||
+	    b->pairing_type != e->pairing_type ||
+	    memcmp(b->auth1_frame + 4, e->frame + 4, 18) ||
+	    memcmp(b->auth1_frame + 24, e->frame + 24, e->frame_len - 24) ||
+	    clock_gettime(CLOCK_MONOTONIC, &now))
+		return false;
+	/* Ignore only MAC retry/sequence/duration changes. A changed SAE commit,
+	 * PASN public key, bootstrap token or peer always starts a new exchange. */
+	return now.tv_sec >= b->auth1_started.tv_sec &&
+	       now.tv_sec - b->auth1_started.tv_sec < 10;
 }
 
 static int on_start(struct bridge *b, const char *line)
@@ -389,7 +542,6 @@ static int on_start(struct bridge *b, const char *line)
 	u8 rsnxe[4];
 	int ret = -1;
 
-	reset_session(b);
 	if (hex_line(line, (u8 *) &e, sizeof(e)))
 		return -1;
 	if (e.deinit || e.role != 2 || e.auth_method != 1 ||
@@ -403,6 +555,23 @@ static int on_start(struct bridge *b, const char *line)
 	    le_to_host16(auth->u.auth.auth_alg) != WLAN_AUTH_PASN ||
 	    le_to_host16(auth->u.auth.auth_transaction) != 1)
 		goto done;
+	ret = correct_setup_event(&e);
+	if (ret < 0) goto done;
+	if (ret > 0)
+		fprintf(stderr, "Corrected stale verification event and Auth2 attributes to SAE setup\n");
+	if (auth1_is_retry(b, &e)) {
+		printf("Auth1 retransmission: retaining PASN handshake%s\n",
+		       b->keys_installed ? " (already completed)" : ", resending Auth2");
+		ret = b->keys_installed ? 0 :
+			send_mgmt(b, b->auth2_frame, b->auth2_len, 0, b->freq, 0);
+		goto done;
+	}
+	reset_session(b);
+	ret = -1;
+	if (clock_gettime(CLOCK_MONOTONIC, &b->auth1_started))
+		goto done;
+	b->auth1_len = e.frame_len;
+	memcpy(b->auth1_frame, e.frame, e.frame_len);
 	memcpy(b->own, auth->da, 6);
 	memcpy(b->peer, e.peer, 6);
 	memcpy(b->bssid, e.bssid, 6);
@@ -482,6 +651,11 @@ static int on_rx(struct bridge *b, const char *line)
 	    le_to_host16(auth->u.auth.auth_alg) != WLAN_AUTH_PASN ||
 	    le_to_host16(auth->u.auth.auth_transaction) != 3)
 		return -1;
+	if (b->keys_installed) {
+		printf("Ignoring Auth3 after keys already installed\n");
+		memset(&e, 0, sizeof(e));
+		return 0;
+	}
 	ret = handle_auth_pasn_3(b->pasn, b->own, b->peer, auth, e.frame_len);
 	printf("Auth3 verification %s: peer=" MACSTR ", TK=%zu, KDK=%zu\n",
 	       ret ? "FAILED" : "OK", MAC2STR(b->peer),
@@ -489,6 +663,8 @@ static int on_rx(struct bridge *b, const char *line)
 	fflush(stdout);
 	if (!ret)
 		ret = install_keys(b);
+	if (!ret)
+		b->keys_installed = true;
 	if (!ret && b->pairing_type == PAIRING_SETUP) {
 		if (store_npk(b))
 			fprintf(stderr, "Could not retain NPK for pairing verification\n");

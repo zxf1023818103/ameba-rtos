@@ -68,7 +68,12 @@ _WEAK void wifi_set_user_config(void)
 	/*Regulatory related*/
 	wifi_user_config.country_code[0] = 0;
 	wifi_user_config.country_code[1] = 0;
+#ifdef AMEBA_GREEN2_NAN_2G_ONLY
+	/* Dedicated NAN stability bench: constrain data scheduling as well as DW. */
+	wifi_user_config.freq_band_support = RTW_SUPPORT_BAND_2_4G;
+#else
 	wifi_user_config.freq_band_support = RTW_SUPPORT_BAND_MAX;
+#endif
 	wifi_user_config.tx_pwr_table_selection = 2;
 	wifi_user_config.tpc_enable = 0; /* 1: apply TPC for FCC/MKK/KCC/IC/ETSI(5.25~5.35GHz, 5.47~5.725GHz), CN(5.25~5.35GHz) */
 	wifi_user_config.rtw_802_11d_en = DISABLE;

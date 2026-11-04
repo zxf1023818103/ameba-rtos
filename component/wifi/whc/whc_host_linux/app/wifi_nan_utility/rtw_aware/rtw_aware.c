@@ -147,13 +147,22 @@ char *rtw_nan_r3;
 char *nan_intf = "nan0";
 volatile sig_atomic_t sig_flag = 0;
 timer_t timerid;
+static volatile sig_atomic_t timer_active;
+
+static void stop_timer(void)
+{
+	if (timer_active) {
+		timer_active = 0;
+		timer_delete(timerid);
+	}
+}
 static unsigned int g_num_service = 1;
 struct nan_service_mgnt g_nan_service_mgnt[MAX_SERVICE_NUM] = {0};
 static unsigned int g_test_cnt = 0;
 
 void dns_evt_pasn_result(struct dns_evt_pasn_result *info, uint32_t len);
 
-/* Test bridge for responder PASN completion when Green2 omits event 33. */
+/* Auth3-verified responder completion from the external PASN bridge. */
 static void check_local_pasn_result(void)
 {
 	const char *path = getenv("GREEN2_PASN_RESULT_FILE");
@@ -171,12 +180,28 @@ static void check_local_pasn_result(void)
 	}
 	fclose(fp);
 	unlink(path);
+	if (result_data[0] != NAN_PAIRING_TYPE_SETUP &&
+	    result_data[0] != NAN_PAIRING_TYPE_VERIFICATION)
+		return;
 	for (i = 0; i < g_num_service; i++) {
 		struct nan_data_mgnt *mgnt = &g_nan_service_mgnt[i].nan_mgnt;
-		if (mgnt->nan_status != NAN_STATUS_PASN_START ||
-		    memcmp(mgnt->service.pairing_info.peer_nmi,
+		struct pairing_info *pairing = &mgnt->service.pairing_info;
+		bool corrected_setup =
+			result_data[0] == NAN_PAIRING_TYPE_SETUP &&
+			mgnt->nan_status == NAN_STATUS_GET_PASN_RESULT &&
+			pairing->role == PAIRING_ROLE_RESPONDER &&
+			pairing->pasn_type == NAN_PAIRING_TYPE_VERIFICATION;
+
+		/* On re-pair, firmware can finish using its stale verification
+		 * type before the bridge reports the verified SAE setup. Let that
+		 * setup finish NIK exchange, but never replay it over an active
+		 * data path, another peer or an already completed setup. */
+		if ((mgnt->nan_status != NAN_STATUS_PASN_START && !corrected_setup) ||
+		    memcmp(pairing->peer_nmi,
 			   result_data + 1, ETH_ALEN))
 			continue;
+		if (corrected_setup)
+			RTW_INFO("Completing verified setup after native verification result\n");
 		RTW_INFO("PASN responder completion from local bridge\n");
 		dns_local_pasn_result(result_data + 1, result_data[0]);
 		return;
@@ -278,10 +303,16 @@ void timer_handler(int sig)
 	for (i = 0; i < g_num_service; i++) {
 		tmp_nan_data_mgnt = &g_nan_service_mgnt[i].nan_mgnt;
 		tmp_nan_data_mgnt->data_path_retry++;
+		/* PIN entry is a human interaction, not an NDP response timeout. */
+		unsigned int retry_limit =
+			tmp_nan_data_mgnt->nan_status == NAN_STATUS_PASN_START &&
+			tmp_nan_data_mgnt->service.pairing_info.role == PAIRING_ROLE_RESPONDER &&
+			tmp_nan_data_mgnt->service.pairing_info.pasn_type == NAN_PAIRING_TYPE_SETUP
+			? 23 : RETRY_MAX; /* 24 x 5 seconds for PIN entry */
 		switch (tmp_nan_data_mgnt->nan_status) {
 		case NAN_STATUS_SEND_REQ:
 			if (tmp_nan_data_mgnt->data_path.ndp_id &&
-				tmp_nan_data_mgnt->data_path_retry > RETRY_MAX) {
+				tmp_nan_data_mgnt->data_path_retry > retry_limit) {
 				RTW_INFO("Data rsp not receive! nan_status[%d],"\
 						 "retry[%d],send data path end[%d]\n",
 						 tmp_nan_data_mgnt->nan_status,
@@ -289,13 +320,13 @@ void timer_handler(int sig)
 						 tmp_nan_data_mgnt->data_path_retry);
 				dns_datapath_end(tmp_nan_data_mgnt->data_path.ndp_id);
 				clear_data_path(tmp_nan_data_mgnt);
-				timer_delete(timerid);
+				stop_timer();
 			}
 			break;
 		case NAN_STATUS_SEND_RSP:
 			if (tmp_nan_data_mgnt->data_path.sec_type &&
 				tmp_nan_data_mgnt->data_path.ndp_id &&
-				tmp_nan_data_mgnt->data_path_retry > RETRY_MAX) {
+				tmp_nan_data_mgnt->data_path_retry > retry_limit) {
 				RTW_INFO("Data confirm not receive! nan_status[%d],"\
 						 "retry[%d],send data path end[%d]\n",
 						 tmp_nan_data_mgnt->nan_status,
@@ -303,11 +334,11 @@ void timer_handler(int sig)
 						 tmp_nan_data_mgnt->data_path.ndp_id);
 				dns_datapath_end(tmp_nan_data_mgnt->data_path.ndp_id);
 				clear_data_path(tmp_nan_data_mgnt);
-				timer_delete(timerid);
+				stop_timer();
 			}
 			break;
 		case NAN_STATUS_BSTRAP_START:
-			if (tmp_nan_data_mgnt->data_path_retry > RETRY_MAX) {
+			if (tmp_nan_data_mgnt->data_path_retry > retry_limit) {
 				RTW_INFO("Boostrapping method result not receive! "\
 						 "nan_status[%d], retry[%d]\n",
 						 tmp_nan_data_mgnt->nan_status,
@@ -315,11 +346,11 @@ void timer_handler(int sig)
 				/* todo: reset drv bstrap and start again */
 				clear_pairing_info(tmp_nan_data_mgnt);
 				clear_data_path(tmp_nan_data_mgnt);
-				timer_delete(timerid);
+				stop_timer();
 			}
 			break;
 		case NAN_STATUS_PASN_START:
-			if (tmp_nan_data_mgnt->data_path_retry > RETRY_MAX) {
+			if (tmp_nan_data_mgnt->data_path_retry > retry_limit) {
 				RTW_INFO("PASN result not receive! nan_status[%d],"\
 						 "retry[%d]\n",
 						 tmp_nan_data_mgnt->nan_status,
@@ -327,22 +358,24 @@ void timer_handler(int sig)
 				/* todo: the value assigned during bstrap cannot be cleared */
 				clear_pairing_info(tmp_nan_data_mgnt);
 				clear_data_path(tmp_nan_data_mgnt);
-				timer_delete(timerid);
+				stop_timer();
 			}
 			break;
 		default:
 			break;
 		}
-		if (tmp_nan_data_mgnt->data_path_retry > RETRY_MAX) {
-			timer_delete(timerid);
+		if (tmp_nan_data_mgnt->data_path_retry > retry_limit) {
+			stop_timer();
 		}
 	}
 }
 
 void creat_timer()
 {
-	struct sigevent sev;
-	struct itimerspec its;
+	struct sigevent sev = {0};
+	struct itimerspec its = {0};
+
+	stop_timer();
 
 	sev.sigev_notify = SIGEV_SIGNAL;
 	sev.sigev_signo = SIGUSR1;
@@ -351,7 +384,9 @@ void creat_timer()
 
 	if (timer_create(CLOCK_MONOTONIC, &sev, &timerid) == -1) {
 		RTW_INFO("timer_create");
+		return;
 	}
+	timer_active = 1;
 
 	its.it_value.tv_sec = 5;
 	its.it_value.tv_nsec = 0;
@@ -360,6 +395,7 @@ void creat_timer()
 
 	if (timer_settime(timerid, 0, &its, NULL) == -1) {
 		RTW_INFO("timer_settime");
+		stop_timer();
 	}
 }
 
@@ -752,8 +788,8 @@ void dns_evt_data_indication(struct dns_evt_data_indic_info *info, uint32_t len)
 	RTW_INFO("%s, nan_status[%d]\n", __func__, tmp_nan_data_mgnt->nan_status);
 
 	/* reset timer for data request */
-	if (timerid) {
-		timer_delete(timerid);
+	if (timer_active) {
+		stop_timer();
 	}
 
 	parse_data_indication(tmp_nan_data_mgnt, info, len);
@@ -789,8 +825,8 @@ void dns_evt_data_confirm(struct dns_evt_data_comfirm_info *info, uint32_t len)
 		return;
 	}
 
-	if (timerid) {
-		timer_delete(timerid);
+	if (timer_active) {
+		stop_timer();
 	}
 
 	RTW_INFO("%s, nan_status[%d]\n", __func__, tmp_nan_data_mgnt->nan_status);
@@ -959,8 +995,8 @@ void dns_evt_bstrap_result(struct dns_evt_bstrap_result *info, uint32_t len)
 		return;
 	}
 
-	if (timerid) {
-		timer_delete(timerid);
+	if (timer_active) {
+		stop_timer();
 	}
 
 	RTW_INFO("%s, bstrap_method[0x%x]\n", __func__, info->bstrap_method);
@@ -1027,8 +1063,8 @@ void dns_evt_pasn_result(struct dns_evt_pasn_result *info, uint32_t len)
 	pairing_info->peer_nik_caching = info->remote_nik_caching;
 	memcpy(pairing_info->peer_nmi, info->peer_nmi, ETH_ALEN);
 
-	if (timerid) {
-		timer_delete(timerid);
+	if (timer_active) {
+		stop_timer();
 	}
 
 	if (pairing_info->role == PAIRING_ROLE_INITIATOR) {

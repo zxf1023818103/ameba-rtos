@@ -977,6 +977,13 @@ RTW_RET_STATUS rtw_nan_api_publish(char *intf, struct srvc_info *info)
 		memcpy(publish_srv->key, info->passphrase, info->passphrase_len);
 	} else if (info->sec_type == NAN_PMK_SET_BY_PAIRING) {
 		publish_srv->pairing_enable = true;
+		/* iOS discards the setup session's temporary key after NIK exchange.
+		 * Green2 otherwise encrypts unicast Publish replies with that stale
+		 * key, hiding the service until the peer entry expires. Value 1 sends
+		 * solicited discovery replies to the NAN multicast address; PASN
+		 * verification and NDP remain authenticated/encrypted as before.
+		 */
+		publish_srv->solicited_tx_type = 1;
 		INFO_PRINT("[rtw_cmd] Security type of publish is Pairing!\n");
 		publish_srv->control =
 			(RTW_NAN_SDE_CTL_DATAPATH_REQ_REQUIRED |
