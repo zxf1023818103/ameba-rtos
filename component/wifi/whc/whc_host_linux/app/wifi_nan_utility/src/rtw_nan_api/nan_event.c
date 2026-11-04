@@ -5,30 +5,30 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <errno.h>
-#include <ctype.h>
+#include <net/if.h>
+#include <poll.h>
+#include <linux/nl80211.h>
+#include <netlink/genl/ctrl.h>
+#include <netlink/genl/genl.h>
+#include <netlink/msg.h>
+#include <netlink/netlink.h>
 #include <stddef.h>
 #include <sys/stat.h>
 #include "nan_event.h"
 #include "rtw_nan_cmd_api.h"
 #include "rtw_nan_vendor_def.h"
 
-#define LOG_FILE_NAME "nan_event.log"
-#define OUI_REALTEK_STR "00e04c"
-
 #define PRINT_DBG_ADDR(_str, _addr) \
 	DEBUG_PRINT("%s: %02x:%02x:%02x:%02x:%02x:%02x\n", \
 	            _str, *(_addr), *((_addr) + 1), *((_addr) + 2), \
 	            *((_addr) + 3), *((_addr) + 4), *((_addr) + 5));
 
-extern char *rtw_iw;
+extern char *nan_intf;
 rtw_nan_evt_cb g_nan_evt_cb;
-static volatile unsigned char g_evt_terminate;
-FILE *g_evt_log_file = NULL;
-volatile int g_log_file_offset = 0;
-pthread_t tid;
-pthread_t g_detect_fsize_tid;
-static int g_max_event_log_size = MIN_NAN_EVT_LSIZE;
-static char g_evt_header[1024];
+static struct nl_sock *g_evt_sock;
+static pthread_t g_evt_thread;
+static int g_evt_wake[2] = {-1, -1};
+static unsigned int g_evt_ifindex;
 
 void _print_data(uint8_t *start, uint16_t len)
 {
@@ -530,59 +530,24 @@ void _parse_disc_result_nan_attr(uint8_t *attr_list,
 	}
 }
 
-static size_t _parse_evt_hex_line(const char *line, char *data, size_t capacity)
+/* Each callback owns a complete vendor payload; no text files or reader
+ * rotation can interrupt delivery of NDP confirmation/establishment events.
+ * Variable-length events may first read their fixed header, then the full body.
+ */
+static bool _copy_evt_data(void *dst, size_t size,
+			   const void *payload, size_t payload_len)
 {
-    const char *p = strstr(line, "vendor event:");
-    size_t count = 0;
-    char *end;
-    unsigned long value;
-
-    if (!p) {
-        return 0;
-    }
-    p += strlen("vendor event:");
-    while (count < capacity) {
-        while (isspace((unsigned char)*p)) {
-            p++;
-        }
-        if (!isxdigit((unsigned char)*p)) {
-            break;
-        }
-        value = strtoul(p, &end, 16);
-        if (end == p || value > 0xff) {
-            break;
-        }
-        data[count++] = (char)value;
-        p = end;
-    }
-    return count;
+	if (!dst || size > payload_len) {
+		INFO_PRINT("[rtw_event] short vendor payload: %zu/%zu bytes\n",
+				   payload_len, size);
+		return false;
+	}
+	memcpy(dst, payload, size);
+	return true;
 }
 
-void _parse_evt_data(char *evt_data, size_t evt_data_size)
+static void _evt_handler(int evt_id, const void *payload, size_t payload_len)
 {
-    char str[1024];
-    size_t count = _parse_evt_hex_line(g_evt_header, evt_data, evt_data_size);
-    long line_pos;
-
-    while (count < evt_data_size) {
-        line_pos = ftell(g_evt_log_file);
-        if (!fgets(str, sizeof(str), g_evt_log_file)) {
-            break;
-        }
-        if (strstr(str, "vendor event " OUI_REALTEK_STR ":")) {
-            fseek(g_evt_log_file, line_pos, SEEK_SET);
-            break;
-        }
-        count += _parse_evt_hex_line(str, evt_data + count, evt_data_size - count);
-    }
-    if (count < evt_data_size) {
-        INFO_PRINT("[rtw_event] short vendor event: %zu/%zu bytes\n", count, evt_data_size);
-    }
-}
-
-void _evt_handler(int evt_id)
-{
-	fpos_t evt_data_pos;
 	void *tmp_data;
 
 	if (evt_id >= RTW_VENDOR_EVT_MAX) {
@@ -590,15 +555,15 @@ void _evt_handler(int evt_id)
 		return;
 	}
 
-	fgetpos(g_evt_log_file, &evt_data_pos);
-
 	switch (evt_id) {
 	case RTW_VENDOR_EVT_NAN_DATA_COMFIRM: {
 		struct vendor_evt_data_confirm_info evt_data = {0};
 		struct nan_evt_data_confirm_info confirm_result = {0};
 		struct nan_generic_srvc_proto gene_srvc = {0};
 
-		_parse_evt_data((char *)(&evt_data), sizeof(evt_data));
+		if (!_copy_evt_data((char *)(&evt_data), sizeof(evt_data), payload, payload_len)) {
+			break;
+		}
 		_print_data_confirm_evt(&evt_data);
 
 		confirm_result.type = evt_data.type;
@@ -625,7 +590,9 @@ void _evt_handler(int evt_id)
 		size_t size = sizeof(struct rtw_nan_cluster_changed_event_data);
 		struct nan_evt_cluster_changed_info cluster_info = {0};
 
-		_parse_evt_data((char *)(&evt_data), sizeof(evt_data));
+		if (!_copy_evt_data((char *)(&evt_data), sizeof(evt_data), payload, payload_len)) {
+			break;
+		}
 		PRINT_DBG_ADDR("[rtw_event] cluster_id", cluster_info.cluster_id);
 
 		memcpy(cluster_info.cluster_id, evt_data.cluster_id.ether_addr_octet, ETH_ALEN);
@@ -643,12 +610,14 @@ void _evt_handler(int evt_id)
 		p_evt_data = (struct rtw_nan_discovery_result_received_event_data *)calloc(1, size);
 
 		/* get the attr len */
-		_parse_evt_data((char *)p_evt_data, size);
+		if (!_copy_evt_data((char *)p_evt_data, size, payload, payload_len)) {
+			free(p_evt_data);
+			break;
+		}
 		/* realloc memory for attr list */
 		if (p_evt_data->publish_attribute_list_length) {
 			size = offsetof(struct rtw_nan_discovery_result_received_event_data, publish_attribute_list[0]) +
 				   p_evt_data->publish_attribute_list_length;
-			fsetpos(g_evt_log_file, &evt_data_pos);
 			tmp_data = realloc(p_evt_data, size);
 			if (tmp_data == NULL) {
 				free(p_evt_data);
@@ -657,7 +626,10 @@ void _evt_handler(int evt_id)
 			}
 			p_evt_data = (struct rtw_nan_discovery_result_received_event_data *)tmp_data;
 			memset(p_evt_data, 0, size);
-			_parse_evt_data((char *)p_evt_data, size);
+			if (!_copy_evt_data((char *)p_evt_data, size, payload, payload_len)) {
+				free(p_evt_data);
+				break;
+			}
 		}
 
 		/* print original event data */
@@ -697,12 +669,14 @@ void _evt_handler(int evt_id)
 		p_evt_data = (struct rtw_nan_datapath_request_received_event_data *)calloc(1, size);
 
 		/* get the attr len */
-		_parse_evt_data((char *)p_evt_data, size);
+		if (!_copy_evt_data((char *)p_evt_data, size, payload, payload_len)) {
+			free(p_evt_data);
+			break;
+		}
 		/* realloc memory for attr list */
 		if (p_evt_data->attribute_list_length) {
 			size = offsetof(struct rtw_nan_datapath_request_received_event_data, attribute_list[0]) +
 				   p_evt_data->attribute_list_length;
-			fsetpos(g_evt_log_file, &evt_data_pos);
 			tmp_data = realloc(p_evt_data, size);
 			if (tmp_data == NULL) {
 				free(p_evt_data);
@@ -711,7 +685,10 @@ void _evt_handler(int evt_id)
 			}
 			p_evt_data = (struct rtw_nan_datapath_request_received_event_data *)tmp_data;
 			memset(p_evt_data, 0, size);
-			_parse_evt_data((char *)p_evt_data, size);
+			if (!_copy_evt_data((char *)p_evt_data, size, payload, payload_len)) {
+				free(p_evt_data);
+				break;
+			}
 		}
 
 		_print_datapath_req_recv_evt(p_evt_data);
@@ -731,12 +708,14 @@ void _evt_handler(int evt_id)
 		p_evt_data = (struct rtw_nan_datapath_response_received_event_data *)calloc(1, size);
 
 		/* get the attr len */
-		_parse_evt_data((char *)p_evt_data, size);
+		if (!_copy_evt_data((char *)p_evt_data, size, payload, payload_len)) {
+			free(p_evt_data);
+			break;
+		}
 		/* realloc memory for attr list */
 		if (p_evt_data->attribute_list_length) {
 			size = offsetof(struct rtw_nan_datapath_response_received_event_data, attribute_list[0]) +
 				   p_evt_data->attribute_list_length;
-			fsetpos(g_evt_log_file, &evt_data_pos);
 			tmp_data = realloc(p_evt_data, size);
 			if (tmp_data == NULL) {
 				free(p_evt_data);
@@ -745,7 +724,10 @@ void _evt_handler(int evt_id)
 			}
 			p_evt_data = (struct rtw_nan_datapath_response_received_event_data *)tmp_data;
 			memset(p_evt_data, 0, size);
-			_parse_evt_data((char *)p_evt_data, size);
+			if (!_copy_evt_data((char *)p_evt_data, size, payload, payload_len)) {
+				free(p_evt_data);
+				break;
+			}
 		}
 
 		_print_datapath_rsp_recv_evt(p_evt_data);
@@ -761,7 +743,9 @@ void _evt_handler(int evt_id)
 		struct rtw_nan_datapath_established_event_data evt_data = {0};
 		struct nan_evt_data_established_info info = {0};
 
-		_parse_evt_data((char *)(&evt_data), sizeof(evt_data));
+		if (!_copy_evt_data((char *)(&evt_data), sizeof(evt_data), payload, payload_len)) {
+			break;
+		}
 		_print_datapath_established_evt(&evt_data);
 
 		info.publish_id = evt_data.pub_id;
@@ -778,7 +762,9 @@ void _evt_handler(int evt_id)
 		struct rtw_nan_datapath_end_event_data evt_data = {0};
 		struct nan_evt_data_end_info info = {0};
 
-		_parse_evt_data((char *)(&evt_data), sizeof(evt_data));
+		if (!_copy_evt_data((char *)(&evt_data), sizeof(evt_data), payload, payload_len)) {
+			break;
+		}
 
 		info.ndp_id = evt_data.datapath_id;
 		info.publish_id = evt_data.publish_id;
@@ -797,12 +783,14 @@ void _evt_handler(int evt_id)
 		p_evt_data = (struct rtw_nan_follow_up_received_event_data *)calloc(1, size);
 
 		/* get the attr len */
-		_parse_evt_data((char *)p_evt_data, size);
+		if (!_copy_evt_data((char *)p_evt_data, size, payload, payload_len)) {
+			free(p_evt_data);
+			break;
+		}
 		/* realloc memory for attr list */
 		if (p_evt_data->attribute_list_length) {
 			size = offsetof(struct rtw_nan_follow_up_received_event_data, attribute_list[0]) +
 				   p_evt_data->attribute_list_length;
-			fsetpos(g_evt_log_file, &evt_data_pos);
 			tmp_data = realloc(p_evt_data, size);
 			if (tmp_data == NULL) {
 				free(p_evt_data);
@@ -811,7 +799,10 @@ void _evt_handler(int evt_id)
 			}
 			p_evt_data = (struct rtw_nan_follow_up_received_event_data *)tmp_data;
 			memset(p_evt_data, 0, size);
-			_parse_evt_data((char *)p_evt_data, size);
+			if (!_copy_evt_data((char *)p_evt_data, size, payload, payload_len)) {
+				free(p_evt_data);
+				break;
+			}
 		}
 
 		_print_datapth_follow_up_recv_evt(p_evt_data);
@@ -826,7 +817,9 @@ void _evt_handler(int evt_id)
 	case RTW_VENDOR_EVT_NAN_DATA_INDICATION: {
 		struct vendor_evt_data_indication_info evt_data = {0};
 		struct nan_evt_data_indication_info indic_result = {0};
-		_parse_evt_data((char *)(&evt_data), sizeof(evt_data));
+		if (!_copy_evt_data((char *)(&evt_data), sizeof(evt_data), payload, payload_len)) {
+			break;
+		}
 		_print_data_indication_evt(&evt_data);
 
 		indic_result.type = evt_data.type;
@@ -852,7 +845,9 @@ void _evt_handler(int evt_id)
 		struct vendor_evt_bstrap_result evt_data = {0};
 		struct nan_evt_bstrap_result bstrap_result = {0};
 
-		_parse_evt_data((char *)(&evt_data), sizeof(evt_data));
+		if (!_copy_evt_data((char *)(&evt_data), sizeof(evt_data), payload, payload_len)) {
+			break;
+		}
 		_print_data_bstrap_res_evt(&evt_data);
 
 		if (IS_BSTRAP_TYPE_REQ(evt_data.type_status)) {
@@ -874,7 +869,9 @@ void _evt_handler(int evt_id)
 	case RTW_VENDOR_EVT_NAN_PASN_RESULT: {
 		struct vendor_evt_pasn_result evt_data = {0};
 		struct nan_evt_pasn_result pasn_result = {0};
-		_parse_evt_data((char *)(&evt_data), sizeof(evt_data));
+		if (!_copy_evt_data((char *)(&evt_data), sizeof(evt_data), payload, payload_len)) {
+			break;
+		}
 		_print_data_pasn_res_evt(&evt_data);
 
 		pasn_result.status = evt_data.status;
@@ -890,7 +887,9 @@ void _evt_handler(int evt_id)
 	break;
 	case RTW_VENDOR_EVT_NAN_PASN_UPD_PMKID: {
 		struct vendor_evt_pasn_upd_pmkid evt_data = {0};
-		_parse_evt_data((char *)(&evt_data), sizeof(evt_data));
+		if (!_copy_evt_data((char *)(&evt_data), sizeof(evt_data), payload, payload_len)) {
+			break;
+		}
 		_print_data_recv_pasn_upd_pmkid(&evt_data);
 		/* tmp remove as update pmkid evt is not used currently. */
 #if 0
@@ -908,7 +907,9 @@ void _evt_handler(int evt_id)
 	break;
 	case RTW_VENDOR_EVT_NAN_NIK_CACHE: {
 		struct nan_nik_cache_data nik_cache_data;
-		_parse_evt_data((char *)&nik_cache_data, sizeof(nik_cache_data));
+		if (!_copy_evt_data((char *)&nik_cache_data, sizeof(nik_cache_data), payload, payload_len)) {
+			break;
+		}
 		FILE *f;
 		mkdir("/var/lib/nan", 0700);
 		f = fopen("/var/lib/nan/nik_cache", "wb");
@@ -928,174 +929,130 @@ void _evt_handler(int evt_id)
 	}
 }
 
-void _evt_parser()
+static int _vendor_event(struct nl_msg *msg, void *arg)
 {
-    char str[1024];
-    char *id_start;
+	struct nlmsghdr *hdr = nlmsg_hdr(msg);
+	struct genlmsghdr *genl;
+	struct nlattr *attrs[NL80211_ATTR_MAX + 1];
+	unsigned int event_id;
+	(void)arg;
 
-    fseek(g_evt_log_file, g_log_file_offset, SEEK_SET);
-    while (fgets(str, sizeof(str), g_evt_log_file)) {
-        id_start = strstr(str, "vendor event " OUI_REALTEK_STR ":");
-        if (!id_start) {
-            continue;
-        }
-        strncpy(g_evt_header, str, sizeof(g_evt_header) - 1);
-        g_evt_header[sizeof(g_evt_header) - 1] = '\0';
-        id_start += strlen("vendor event " OUI_REALTEK_STR ":");
-        _evt_handler((int)strtol(id_start, NULL, 10));
-    }
-    g_log_file_offset = ftell(g_evt_log_file);
+	if (!genlmsg_valid_hdr(hdr, 0))
+		return NL_SKIP;
+	genl = nlmsg_data(hdr);
+	if (genl->cmd != NL80211_CMD_VENDOR ||
+		genlmsg_parse(hdr, 0, attrs, NL80211_ATTR_MAX, NULL) < 0)
+		return NL_SKIP;
+	if (!attrs[NL80211_ATTR_VENDOR_ID] ||
+		nla_len(attrs[NL80211_ATTR_VENDOR_ID]) != 4 ||
+		nla_get_u32(attrs[NL80211_ATTR_VENDOR_ID]) != 0xe04c ||
+		!attrs[NL80211_ATTR_VENDOR_SUBCMD] ||
+		nla_len(attrs[NL80211_ATTR_VENDOR_SUBCMD]) != 4 ||
+		!attrs[NL80211_ATTR_IFINDEX] ||
+		nla_len(attrs[NL80211_ATTR_IFINDEX]) != 4 ||
+		nla_get_u32(attrs[NL80211_ATTR_IFINDEX]) != g_evt_ifindex ||
+		!attrs[NL80211_ATTR_VENDOR_DATA])
+		return NL_SKIP;
+	event_id = nla_get_u32(attrs[NL80211_ATTR_VENDOR_SUBCMD]);
+	if (event_id >= RTW_VENDOR_EVT_MAX)
+		return NL_SKIP;
+	_evt_handler(event_id, nla_data(attrs[NL80211_ATTR_VENDOR_DATA]),
+			 nla_len(attrs[NL80211_ATTR_VENDOR_DATA]));
+	return NL_OK;
 }
 
-void *_wait_evt_thread(void *arg)
+static void *_wait_evt_thread(void *arg)
 {
-	if (g_evt_log_file == NULL) {
-		g_evt_log_file = fopen(LOG_FILE_NAME, "r");
-		if (g_evt_log_file == NULL) {
-			INFO_PRINT("[rtw_event] error: log file can't be opened!\n");
-			return (void *)1;
+	struct pollfd fds[2] = {
+		{.fd = nl_socket_get_fd(g_evt_sock), .events = POLLIN},
+		{.fd = g_evt_wake[0], .events = POLLIN}
+	};
+	int ret;
+	(void)arg;
+
+	for (;;) {
+		ret = poll(fds, 2, -1);
+		if (ret < 0 && errno == EINTR)
+			continue;
+		if (ret < 0 || fds[1].revents)
+			break;
+		if (fds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+			INFO_PRINT("[rtw_event] vendor event socket error\n");
+			break;
+		}
+		if (fds[0].revents & POLLIN) {
+			ret = nl_recvmsgs_default(g_evt_sock);
+			if (ret < 0 && ret != -NLE_AGAIN && ret != -NLE_INTR)
+				INFO_PRINT("[rtw_event] receive error: %s\n", nl_geterror(ret));
 		}
 	}
-
-	while (!g_evt_terminate) {
-		_evt_parser();
-		sleep(1);
-	}
-
-	return (void *)0;
+	return NULL;
 }
 
-void *_detect_fsize_thread(void *arg)
+int rtw_nan_evt_init(void)
 {
-	while (!g_evt_terminate) {
-		if (g_log_file_offset > g_max_event_log_size) {
-			rtw_nan_evt_reinit();
-		}
-		sleep(1);
-	}
-	return (void *)0;
-}
+	int group, ret;
 
-int rtw_nan_evt_init()
-{
-	int err = 0;
-	char cmd[256] = {0};
-	INFO_PRINT("[rtw_event] %s \n", __func__);
-
-	if (g_evt_log_file != NULL) {
-		INFO_PRINT(" %s g_evt_log_file is opened\n", __func__);
+	if (g_evt_sock)
 		return true;
-	}
-
-	/* 1. init global var */
-	g_evt_terminate = 0;
-
-	/* 2. start iw event */
-	snprintf(cmd, sizeof(cmd), "umask 077; stdbuf -oL %s event -f > %s &", rtw_iw, LOG_FILE_NAME);
-	system(cmd);
-	chmod(LOG_FILE_NAME, 0600);
-	sleep(1);
-
-	/* 3. open nan_event_log */
-	g_evt_log_file = fopen(LOG_FILE_NAME, "r");
-	if (g_evt_log_file == NULL) {
-		INFO_PRINT("[rtw_event] %s can't be opened, retry later.\n", LOG_FILE_NAME);
+	g_evt_ifindex = nan_intf ? if_nametoindex(nan_intf) : 0;
+	if (!g_evt_ifindex)
 		return false;
+	g_evt_sock = nl_socket_alloc();
+	if (!g_evt_sock || genl_connect(g_evt_sock) < 0)
+		goto fail;
+	group = genl_ctrl_resolve_grp(g_evt_sock, "nl80211", "vendor");
+	if (group < 0 || nl_socket_add_membership(g_evt_sock, group) < 0)
+		goto fail;
+	/* Keep bursts queued while a callback executes a vendor command. */
+	if (nl_socket_set_buffer_size(g_evt_sock, 1024 * 1024, 0) < 0)
+		INFO_PRINT("[rtw_event] using default receive buffer size\n");
+	nl_socket_disable_seq_check(g_evt_sock);
+	if (nl_socket_modify_cb(g_evt_sock, NL_CB_VALID, NL_CB_CUSTOM,
+				   _vendor_event, NULL) < 0 ||
+		nl_socket_set_nonblocking(g_evt_sock) < 0 || pipe(g_evt_wake) < 0)
+		goto fail;
+	ret = pthread_create(&g_evt_thread, NULL, _wait_evt_thread, NULL);
+	if (ret) {
+		INFO_PRINT("[rtw_event] thread create failed: %s\n", strerror(ret));
+		goto fail;
 	}
-
-	g_log_file_offset = 0;
-	/* 4. start thread */
-	err = pthread_create(&tid, NULL, &_wait_evt_thread, NULL);
-	if (err) {
-		INFO_PRINT("[rtw_event] error: thread create, %s\n", strerror(err));
-		return false;
-	}
-
-	err = pthread_create(&g_detect_fsize_tid, NULL, &_detect_fsize_thread, NULL);
-	if (err) {
-		INFO_PRINT("[rtw_event] error: g_detect_fsize_tid thread create, %s\n", strerror(err));
-		return false;
-	}
-
-	INFO_PRINT("[rtw_event] init complete.\n");
+	INFO_PRINT("[rtw_event] continuous vendor events on %s (ifindex %u)\n",
+			   nan_intf, g_evt_ifindex);
 	return true;
-}
-void rtw_nan_evt_reinit()
-{
-	void *ret = NULL;
-	int err = 0;
-	char cmd[256] = {0};
-
-	DEBUG_PRINT("[rtw_event] %s \n", __func__);
-
-	system("killall iw");
-
-	/* terminate thread */
-	g_evt_terminate = 1;
-	err = pthread_join(tid, &ret);
-	if (err) {
-		INFO_PRINT("[rtw_event] error: thread join, %s\n", strerror(err));
-		return;
+fail:
+	INFO_PRINT("[rtw_event] cannot start vendor event receiver\n");
+	if (g_evt_sock)
+		nl_socket_free(g_evt_sock);
+	g_evt_sock = NULL;
+	for (int i = 0; i < 2; i++) {
+		if (g_evt_wake[i] >= 0)
+			close(g_evt_wake[i]);
+		g_evt_wake[i] = -1;
 	}
-
-	if (g_evt_log_file) {
-		fclose(g_evt_log_file);
-	}
-
-	g_evt_terminate = 0;
-	g_log_file_offset = 0;
-
-	sprintf(cmd, "rm %s", LOG_FILE_NAME);
-	system(cmd);
-	sleep(1);
-
-	snprintf(cmd, sizeof(cmd), "umask 077; stdbuf -oL %s event -f > %s &", rtw_iw, LOG_FILE_NAME);
-	system(cmd);
-	chmod(LOG_FILE_NAME, 0600);
-	sleep(1);
-
-	g_evt_log_file = fopen(LOG_FILE_NAME, "r");
-	if (g_evt_log_file == NULL) {
-		INFO_PRINT("[rtw_event] %s can't be opened, retry later.\n", LOG_FILE_NAME);
-		return;
-	}
-
-	g_log_file_offset = 0;
-	err = pthread_create(&tid, NULL, &_wait_evt_thread, NULL);
-	if (err) {
-		INFO_PRINT("[rtw_event] error: thread create, %s\n", strerror(err));
-		return;
-	}
-
-	DEBUG_PRINT("[rtw_event] %s complete.\n", __func__);
+	return false;
 }
 
-void rtw_nan_evt_deinit()
+void rtw_nan_evt_reinit(void)
 {
-	void *ret = NULL;
-	int err = 0;
+	/* Retain the exported API, but never unsubscribe a running receiver. */
+	if (!g_evt_sock)
+		rtw_nan_evt_init();
+}
 
-	/* 1. terminate iw */
-	system("killall iw");
-
-	/* 2. terminate thread */
-	g_evt_terminate = 1;
-	err = pthread_join(g_detect_fsize_tid, &ret);
-	if (err) {
-		INFO_PRINT("[rtw_event] error: g_detect_fsize_tid thread join, %s\n", strerror(err));
-	}
-
-	err = pthread_join(tid, &ret);
-	if (err) {
-		INFO_PRINT("[rtw_event] error: thread join, %s\n", strerror(err));
-	}
-
-	/* 3. close log file */
-	if (g_evt_log_file) {
-		fclose(g_evt_log_file);
-	}
-
-	g_evt_log_file = NULL;
+void rtw_nan_evt_deinit(void)
+{
+	if (!g_evt_sock)
+		return;
+	/* Wake only our receiver; do not kill unrelated iw commands/readers. */
+	while (write(g_evt_wake[1], "x", 1) < 0 && errno == EINTR)
+		;
+	pthread_join(g_evt_thread, NULL);
+	nl_socket_free(g_evt_sock);
+	g_evt_sock = NULL;
+	close(g_evt_wake[0]);
+	close(g_evt_wake[1]);
+	g_evt_wake[0] = g_evt_wake[1] = -1;
 	INFO_PRINT("[rtw_event] deinit complete.\n");
 }
 

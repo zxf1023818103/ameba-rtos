@@ -570,7 +570,7 @@ RTW_RET_STATUS rtw_nan_api_init(uint16_t phy_num, char *intf)
 	sprintf(cmd, "ifconfig %s up", intf);
 	system(cmd);
 
-	/* 3. start event thread and iw event */
+	/* 3. subscribe to vendor events before enabling NAN */
 	if (rtw_nan_evt_init() == false) {
 		return RTW_RET_STATUS_INIT_ERROR;
 	}
@@ -590,7 +590,7 @@ RTW_RET_STATUS rtw_nan_api_deinit(uint16_t phy_num)
 
 	INFO_PRINT("[rtw_cmd] %s\n", __func__);
 
-	/* 1. terminate event thread and kill iw */
+	/* 1. stop this library's vendor event receiver */
 	rtw_nan_evt_deinit();
 
 	/* 2. delete nan wdev */

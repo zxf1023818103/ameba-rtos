@@ -38,8 +38,8 @@ USB 启动盘不属于本次成功验证的配置。
 本分支的 CMake 已处理两种构建方式：源码生成修复对象，或使用打包库。
 
 Linux 端修正 NAN 事件的接口索引、Host API 错误传播以及不适用于 NAN 的
-`wifi_get_setting` 查询（`Host API 0x1005 ret too short`）；发布程序修正
-`iw event` 内联十六进制数据解析、服务匹配过滤及 PASN 完成回调。
+`wifi_get_setting` 查询（`Host API 0x1005 ret too short`）；发布程序通过
+libnl 持续订阅驱动事件，并修正服务匹配过滤及 PASN 完成回调。
 外部应答器直接接收 nl80211 vendor event 29/30，处理 Auth1/2/3、NPK/NIRA
 验证和 TK/KDK/ND-PMK 回传，通过本地完成通知补齐 responder 的 NIK 交换。
 
@@ -152,10 +152,10 @@ sudo nmcli device set wlan1 managed no
 # nan0 已存在且属于 Green2 PHY 时跳过创建。
 sudo iw phy phy0 interface add nan0 type __nan
 sudo ip link set nan0 up
-sudo nmcli device set nan0 managed no
 sudo /opt/green2-nan/run-services.sh wlan0
 ```
 
+NetworkManager 通常不列出 NAN 类型的 `nan0`，无需对它执行 `nmcli device set`。
 `run-services.sh` 检查驱动、PHY、NAN 类型、重复进程与 NetworkManager 状态，
 从实际网卡读取 MAC 写入运行配置，依次启动 vendor-event reader、PASN responder、
 TCP echo 和无限时长发布（`-t 0`）。停止任一子进程会结束本次服务组。
@@ -199,3 +199,33 @@ gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
 
 本次结论限于单个 iPhone 的配对、验证、NDP 和小包 TCP 回包；长期稳定性、吞吐、
 多设备并发、其他模组库版本尚未验证。库中私有 ABI 修复和单 NPK 应答器仍属实验实现。
+
+### 2026-11-04：连续连接时漏收 NDP 确认
+
+旧的 `nan_event.c` 在文本事件日志超过 102400 字节后执行 `killall iw`，
+关闭读线程、删除文件，再重启 `iw event`。现场第五轮连接的 Auth3 成功，
+但 08:28:22 CST 接收器正好重启，主机漏掉 Confirm/Established，20 秒后
+报 `Data confirm not receive` 并主动结束链路。Linux 已收到该连接的 TCP SYN，
+但没有确认事件就不会安装该 peer 的 IPv6 邻居项，因此没有正常回包。
+
+当前实现使用独立 libnl socket 持续订阅 `nl80211/vendor`，按 Realtek OUI
+和 NAN ifindex 筛选，每次解析完整二进制 payload。不存在事件文件轮转或
+`killall iw`；停止时用私有唤醒管道退出接收线程。短报文/不完整可变长报文
+不会触发业务回调。模拟回归测试覆盖 2000 组 NDP 生命周期、2238000 字节事件、
+接口/OUI 过滤和长度边界：
+
+```sh
+gcc -std=gnu11 -g -fsanitize=address,undefined -fno-omit-frame-pointer -pthread \
+  component/wifi/whc/tests/test_nan_vendor_events.c \
+  $(pkg-config --cflags --libs libnl-3.0 libnl-genl-3.0) -o /tmp/test_nan_events
+/tmp/test_nan_events
+```
+
+实机复测：用户确认连续 10 轮均连接并收到回复。08:35:36 CST 启动的新接收器
+保持同一进程运行，随后日志累计 18 次 NDP established、18 次 `NAN-PING`，
+没有短 payload 或 netlink 接收错误，旧事件文件也未继续增长。
+同一测试期间另有 2 次 NDP Confirm 等待超时（08:36:55、08:37:36），后续连接
+继续成功；这些单次建立失败尚未归因，本次修复不代表所有尝试都无超时。
+
+另一次服务消失来自旧运行命令 `-t 86400` 在 `wait_time(uint16_t)` 中被截断。
+部署时已切换为本目录启动脚本使用的 `-t 0`，表示持续发布。

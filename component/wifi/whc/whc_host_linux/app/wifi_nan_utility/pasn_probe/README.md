@@ -71,8 +71,11 @@ the patched scenario library then skips launching or stopping a NAN
 `wpa_supplicant`. The dedicated Green2 interfaces must also be unmanaged by
 NetworkManager during this test. Ethernet remains managed. The direct input
 completed iPhone verification Auth1/2/3 on 2026-11-03. The normal supplicant
-path is unchanged unless this environment variable is set. The event-file
-reader now starts `iw` with line-buffered output and mode-0600 logs.
+path is unchanged unless this environment variable is set. The publisher's
+event receiver now uses its own persistent libnl subscription. This replaces
+the former text log reader, whose 100 KiB rotation killed `iw` and lost NDP
+Confirm/Established events during repeated connections. Command invocations
+of `iw` remain available; the event receiver never kills them.
 
 ## Experimental firmware function replacements
 

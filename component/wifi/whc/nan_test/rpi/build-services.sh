@@ -18,7 +18,7 @@ read -r -a json_flags <<< "$("$pkg" --cflags --libs json-c)"
 read -r -a nl_flags <<< "$("$pkg" --cflags --libs libnl-3.0 libnl-genl-3.0)"
 
 "$cc" -fPIC -shared -pthread -I"$utility/src/rtw_nan_api" \
-    "$utility"/src/rtw_nan_api/*.c -o "$output/libnanapi.so"
+    "$utility"/src/rtw_nan_api/*.c "${nl_flags[@]}" -o "$output/libnanapi.so"
 "$cc" -I"$utility/src/rtw_nan_api" "$utility/rtw_aware/rtw_aware.c" \
     -L"$output" -Wl,-rpath,'$ORIGIN' -lnanapi -pthread \
     "${json_flags[@]}" -o "$output/rtw_aware"
