@@ -44,6 +44,28 @@ choice
         bool "USB"
 endchoice
 
+if AMEBAGREEN2 && BT_INIC_H4
+config BT_INIC_H4_TX_PIN
+    int "H4 UART0 TX pin (PA=0, PB=32, PC=64)"
+    range 0 95
+    default 4
+
+config BT_INIC_H4_RX_PIN
+    int "H4 UART0 RX pin (PA=0, PB=32, PC=64)"
+    range 0 95
+    default 5
+
+config BT_INIC_H4_CTS_PIN
+    int "H4 UART0 CTS pin (PA=0, PB=32, PC=64)"
+    range 0 95
+    default 6
+
+config BT_INIC_H4_RTS_PIN
+    int "H4 UART0 RTS pin (PA=0, PB=32, PC=64)"
+    range 0 95
+    default 7
+endif
+
 config BT_INIC_SPI
     def_bool (BT_INIC_SHARE && WHC_INTF_SPI) || BT_INIC_SPI_D
 
@@ -52,6 +74,17 @@ config BT_INIC_SDIO
 
 config BT_INIC_USB
     def_bool (BT_INIC_SHARE && WHC_INTF_USB) || BT_INIC_USB_D
+
+config BT_INIC_USB_SW_ENABLE
+    bool "Expose USB Bluetooth interfaces without the NIC OTP enable bit"
+    depends on AMEBAGREEN2 && BT_INIC_USB && WHC_DEV_FLASH_BOOT
+    default n
+    help
+        Enable the USB Bluetooth descriptors on flash-boot development boards
+        whose NIC-mode BT_FUNCTION_EN OTP flag is unset. The Bluetooth HCI
+        controller is still initialized by the firmware on the first command.
+        This only changes the runtime USB descriptor configuration; it does
+        not program OTP. Enable only on boards with Bluetooth hardware.
 
 config BT_INIC
     def_bool (WHC_DEV_MENU && !BT_INIC_NONE) || BT_INIC_DEBUG

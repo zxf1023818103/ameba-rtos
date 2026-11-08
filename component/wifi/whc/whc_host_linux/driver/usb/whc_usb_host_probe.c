@@ -44,6 +44,39 @@ static struct usb_device_id whc_usb_ids[] = {
 MODULE_DEVICE_TABLE(usb, whc_usb_ids);
 struct whc_usb whc_usb_host_priv = {0};
 
+static bool whc_usb_is_wifi_interface(struct usb_interface *intf)
+{
+	struct usb_host_interface *alt = intf->cur_altsetting;
+	bool bulk_in = false, bulk_out = false;
+	int i;
+
+	/* The VID/PID match also covers BT HCI/SCO and optional Ethernet.
+	 * Reject those before touching the global Wi-Fi state, even if Wi-Fi
+	 * has already bound. Keep matching by endpoints for older firmware. */
+	for (i = 0; i < alt->desc.bNumEndpoints; i++) {
+		struct usb_endpoint_descriptor *ep = &alt->endpoint[i].desc;
+		u8 num = usb_endpoint_num(ep);
+
+		if (!usb_endpoint_xfer_bulk(ep)) {
+			continue;
+		}
+		if (usb_endpoint_dir_in(ep) && num == RTW_WHC_WIFI_EP_BULK_IN) {
+			bulk_in = true;
+		} else if (usb_endpoint_dir_out(ep)) {
+#ifdef CONFIG_AMEBADPLUS
+			if (num == RTW_WHC_WIFI_EP4_BULK_OUT || num == RTW_WHC_WIFI_EP2_BULK_OUT)
+#else
+			if (num == RTW_WHC_WIFI_EP5_BULK_OUT || num == RTW_WHC_WIFI_EP6_BULK_OUT || num == RTW_WHC_WIFI_EP7_BULK_OUT)
+#endif
+			{
+				bulk_out = true;
+			}
+		}
+	}
+
+	return bulk_in && bulk_out;
+}
+
 int whc_usb_host_init(struct whc_usb *priv, struct usb_interface *intf)
 {
 	struct usb_interface_descriptor	*desc;
@@ -196,6 +229,10 @@ static int whc_usb_host_probe(struct usb_interface *intf, const struct usb_devic
 	struct usb_device *usb = interface_to_usbdev(intf);
 	int status;
 
+	if (!whc_usb_is_wifi_interface(intf)) {
+		return -ENODEV;
+	}
+
 	printk("rtw usb probe start\n");
 	for (i = 0; i < id_cnt; i++) {
 		if ((id_table->idVendor == whc_usb_ids[i].idVendor) &&
@@ -205,7 +242,7 @@ static int whc_usb_host_probe(struct usb_interface *intf, const struct usb_devic
 	}
 	if (i == id_cnt) {
 		printk("USB device descriptor not match\n");
-		goto exit;
+		return -ENODEV;
 	}
 
 	memset(priv, 0, sizeof(struct whc_usb));
@@ -220,6 +257,8 @@ static int whc_usb_host_probe(struct usb_interface *intf, const struct usb_devic
 	usb_set_intfdata(intf, (void *)priv);
 
 	dev_info(priv->dev, "whc_usb_host_probe: vendor=0x%04x product=0x%04x\n", id_table->idVendor, id_table->idProduct);
+	dev_info(priv->dev, "USB bulk buffers: RX=%u TX-limit=%u bytes\n",
+			 WHC_USB_RX_MAX_BUF_SIZE, WHC_USB_TX_MAX_BUF_SIZE);
 
 	if (whc_usb_host_init(priv, intf) != true) {
 		dev_err(priv->dev, "%s: initialize usb Failed!\n", __FUNCTION__);

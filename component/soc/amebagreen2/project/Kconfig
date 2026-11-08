@@ -223,6 +223,13 @@ menu "CONFIG WHC INTF"
         config WHC_WIFI_API_PATH
             default y if WHC_DEV_MENU
             bool "Support WHC WIFI API PATH"
+        config WHC_USB_BULK_2048
+            bool "Use 2048-byte USB bulk receive buffers"
+            depends on WHC_INTF_USB
+            default n
+            help
+              Increase the WHC USB transfer buffer and backing SKB capacity
+              for throughput experiments. High-speed endpoint MPS stays 512.
         config WHC_WPA_SUPPLICANT_OFFLOAD_FOR_KM4TZ
             bool "Support WHC SUPPLICANT OFFLOAD"
         config WHC_DEV_TCPIP_KEEPALIVE_FOR_KM4TZ

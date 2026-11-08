@@ -77,6 +77,33 @@ component/wifi/whc/nan_test/module/build-firmware.sh "$PWD/build_RTL8711Dx_nan"
 及 `build/` 下的 ELF/map。配置明确启用 NAN、SDIO Group1 和 Flash Boot。
 改变编译器安装位置时可设置 `TOOLCHAIN_DIR`。
 
+EV711FL0 同时使用蓝牙 HCI UART 时，可选择独立配置（保留 SDIO Group1）：
+
+```sh
+FIRMWARE_CONFIG="$PWD/component/wifi/whc/nan_test/module/green2_nan_sdio_bt_h4.config" \
+NAN_2G_ONLY=ON \
+  component/wifi/whc/nan_test/module/build-firmware.sh /tmp/green2-nan-bt-h4
+```
+
+外部蓝牙接口为 UART0 H4，115200 baud、8N1、RTS/CTS 硬件流控。按
+`HDK-EV711FL0-3V2/SCH/SCH-EV711FL0-R05.pdf` 第 4、8 页，全部接在 J21：
+
+| J21 针脚 | Green2 信号 | 接外部 HCI 主机 |
+| --- | --- | --- |
+| 5 | PA25 / TX | RX |
+| 8 | PA26 / RX | TX |
+| 3 | PA22 / CTS | RTS |
+| 4 | PA23 / RTS | CTS |
+| 1 或 2 | GND | GND |
+
+使用 3.3 V UART 电平并共地。排针编号以 PCB 丝印的 1 脚为准；COM33 的板载
+LOGUART 继续用于日志和烧录，速率仍是 1500000，与此 HCI 接口不同。
+HCI 控制器按 SDK 行为在收到首条主机命令时初始化，固件不会自行启动 BLE 广播。
+四个引脚可通过 `CONFIG_BT_INIC_H4_{TX,RX,CTS,RTS}_PIN` 配置，编码为
+PA=0..31、PB=32..63、PC=64..95；需核对实际板卡连线。
+本配置不启用新增休眠策略。2026-11-07 已验证编译、COM33 烧录校验及启动日志中
+H4/SDIO 初始化；外部 HCI 接线后的命令收发仍需验证。
+
 编辑修复源码后，选择源码构建，或先重建打包库：
 
 ```sh
@@ -554,3 +581,252 @@ OR 1；同一帧实际发出 `0x5b`，后续通知则是 `0x01`。
 第一组对照固件保留在 `build_RTL8711Dx/nan_immutable_fix_20261104/`。
 两组脱敏证据分别位于本机 `flash-studio-ios/nan-test-results/` 下的
 `20261104-immutable-fix/` 与 `20261104-schedule-fix/`；密钥不入库。
+
+## 2026-11-08：NAN over USB / VMware Ubuntu
+
+EV711FL0 已通过原生 USB 连接 VMware Ubuntu 26.04，内核
+`7.0.0-38-generic`。USB 枚举为 `0bda:f851`，`WHC_USB` 驱动绑定成功，
+总线速率为 High-Speed 480 Mbps（不是实测无线吞吐）。
+日志确认 PIN/PASN 配对成功、2 次 NDP established、6 次合法的
+`NAN-PING\n` 请求；iPhone 用户确认连接并收到回复。
+该结果证明基本发现、配对和数据通路，不代表已完成 USB 长时间压测。
+
+模组配置保留 UART0 蓝牙 H4，改用 USB WHC 和 Flash Boot：
+
+```sh
+export RTK_TOOLCHAIN_DIR="$HOME/rtk-toolchain"
+export PATH="$PWD/.venv/bin:$RTK_TOOLCHAIN_DIR/prebuilts-linux-1.0.3/bin:$PATH"
+FIRMWARE_CONFIG="$PWD/component/wifi/whc/nan_test/module/green2_nan_usb_bt_h4.config" \
+NAN_2G_ONLY=ON \
+  component/wifi/whc/nan_test/module/build-firmware.sh "$HOME/green2-build/nan-usb-bt-h4"
+```
+
+两种 WHC 总线使用同一 `lib_wifi_whc_dev.a`。CMake 已允许 USB 使用现有
+NAN 修复，仍校验原库、私有 NDP 对象和修正库的 SHA-256，未放宽 ABI 检查。
+本次使用 ASDK 12.3.1 build 4600，打包修正库构建；COM37 UART 下载后
+boot/app 均通过设备校验，启动日志显示 `USB device init done!`。
+
+主机驱动使用以下配置，不启用 HCI firmware download：
+
+```sh
+cd component/wifi/whc/whc_host_linux
+make amebagreen2_usb_nan_defconfig
+make prepare
+make -j4
+sudo install -Dm644 driver/usb/whc_usb.ko "/lib/modules/$(uname -r)/extra/whc_usb.ko"
+sudo depmod -a
+sudo modprobe whc_usb
+```
+
+EV711FL0 的 USB1（Type-A）连接 PA4 D+ / PA5 D−，须断开复用的 SDIO
+接线；板上 Type-C/USB 串口用于日志和下载。VMware 应将运行态的
+`0bda:f851` 网卡接入 Ubuntu，下载串口留在 Windows。不要只依据下载模式
+曾出现的 `0bda:8006` 设置运行态设备过滤。
+
+服务继续按上文构建。`prepare-radio.sh` 和 `run-services.sh` 已支持
+`WHC_USB`，并识别其位于 USB device 子接口下的 driver 绑定。
+用 `iw dev` 确定真实 base interface 和 PHY；本次 base 为
+`wlx94c9605906fe`，NAN 设备为 `nan0`。
+
+Ubuntu 的 udev 可能把刚创建的 `nan0` 重命名为 `enx<MAC>`：创建后先运行
+`sudo udevadm settle`，再用 `iw dev` 确认名称。若发生重命名，须将对应
+NAN 接口置 down 并用 `ip link set dev <实际名称> name nan0` 改回，再调用
+`prepare-radio.sh <base> 2GHz` 和 `run-services.sh <base>`。
+本轮通过手动改名验证，尚未加入自动创建接口或开机启动流程。
+
+固件 SHA-256：
+
+- boot.bin：`5b5cc9de84132d757e65ba025c9ec02114f4a2449f832e75e5d6f9782391a28d`
+- app.bin：`36e36d47e97c711595199564a4ae2a618aab7d779186f4cd83e3907271eac103`
+
+### NAN + BLE 共用 USB（Flash Boot）
+
+`module/green2_nan_usb_bt_usb.config` 将蓝牙从 UART H4 切换到
+`CONFIG_BT_INIC_SHARE`，SDK 自动选中 `CONFIG_BT_INIC_USB`，编译
+`bt_inic_usbd.c` 和 `bt_inic_usb.c`。WHC 负责唯一的 USB device 实例，
+蓝牙接入其 HCI command、ACL、event 回调；不能再初始化第二套 USB stack。
+
+```sh
+export RTK_TOOLCHAIN_DIR="$HOME/rtk-toolchain"
+export PATH="$PWD/.venv/bin:$PATH"
+FIRMWARE_CONFIG="$PWD/component/wifi/whc/nan_test/module/green2_nan_usb_bt_usb.config" \
+NAN_2G_ONLY=ON \
+  component/wifi/whc/nan_test/module/build-firmware.sh "$HOME/green2-build/nan-usb-bt-usb"
+```
+
+本次 EV711FL0 的 NIC 模式 BT 使能位为 0，SDK 原本会隐藏 USB BT 接口。
+新增默认关闭的 `CONFIG_BT_INIC_USB_SW_ENABLE`，仅在这份配置中启用，
+让具备蓝牙硬件的 Flash Boot 开发板通过软件暴露 BT；不写 OTP。
+枚举仍是 `0bda:f851`：接口 0 为 HCI、接口 1 为 SCO、接口 2 为 WHC Wi-Fi。
+USB 端点：BT `81/02/82/03/83`，Wi-Fi `84/05/06/07`。
+
+主机侧必须同时具备两项修正：
+
+- 本目录 WHC 驱动在 probe 开始前检查 Wi-Fi bulk 端点，避免按 VID/PID
+  匹配时抢占 BT 接口或清空已经运行的 Wi-Fi 全局状态。
+- `rpi/patches/0001-btusb-green2-flash-boot.patch` 在 Linux `btusb` 的
+  Realtek 通配项之前加入 `0bda:f851` 例外，使用通用 USB HCI。
+  模组已经加载控制器固件，无需 `btrtl` ROM 下载流程。未修正时，Ubuntu
+  的 `0xfc61` 厂商命令超时会反复 reset 整个复合设备，连带中断 WHC。
+  此补丁针对 Flash Boot，不适用于需要主机下载 BT 固件的 ROM 配置。
+
+本次 `btusb` 使用与运行内核匹配的 Ubuntu
+`linux-source-7.0.0=7.0.0-38.38`。从 source package 解出源码后：
+
+```sh
+# 在解出的 linux-source-7.0.0 根目录操作，PATCH 指向上述补丁的绝对路径。
+patch -p1 < "$PATCH"
+printf 'obj-m += btusb.o\n' > drivers/bluetooth/Makefile
+make -C "/lib/modules/$(uname -r)/build" M="$PWD/drivers/bluetooth" modules -j4
+sudo install -Dm644 drivers/bluetooth/btusb.ko \
+  "/lib/modules/$(uname -r)/updates/green2/btusb.ko"
+sudo depmod -a
+```
+
+安装后须重载 `btusb` 或重启，`modinfo -n btusb` 应指向 `updates/green2`。
+卸载 `btusb` 会断开这台主机的所有 USB 蓝牙设备，应先结束相关连接。
+内核升级后需要重新编译安装；这里没有安装 DKMS 自动构建。
+
+BLE 测试使用 Ubuntu BlueZ 的 GATT server；模组负责 HCI controller 和射频。
+先用 `bluetoothctl list`、`/sys/class/bluetooth/hci*/device` 确认适配器归属，
+不要把 `hci1` 当成固定编号。本次 Green2 是 `hci1`，地址
+`94:C9:60:59:06:FF`；另一只 USB 蓝牙是空口客户端 `hci0`。
+
+```sh
+sudo apt install bluez python3-dbus python3-gi
+sudo python3 rpi/ble_gatt.py --adapter hci1
+# 在另一终端，用独立蓝牙控制器扫描、连接并验证通知：
+sudo python3 rpi/ble_client_smoke.py --adapter hci0 --rounds 10
+```
+
+广播名 `Green2 BLE`，service UUID `7b183224-9168-443e-a927-7aeea07e0001`，
+characteristic UUID `7b183224-9168-443e-a927-7aeea07e0002`，支持 read/write/notify。
+写入 `BLE-PING\n`，返回 `BLE-PONG\n` 通知。向 GATT server 进程发送
+`SIGUSR1` 可对已订阅客户端发送 `NAN-READY\n`，供后续唤醒流程接入。
+本程序尚未接入 iOS AccessorySetupKit、CoreBluetooth 后台恢复或休眠控制，
+也没有对测试 GATT 特征强制配对加密。
+
+2026-11-08 18:43:58–18:44:59（UTC+8）共存验证：同一条 BLE 连接完成
+1000/1000 次 write + notification 回包，中位 60 ms，最大 112 ms；
+同一时间窗口 NAN TCP 服务收到 48 次有效请求，iPhone 用户确认收到回复。
+这验证了两个 USB 接口和无线业务的并行通路，不等同于 1000 次重新连接，
+也不代表已经完成长时间稳定性或休眠功耗测试。测试后两个服务保持运行。
+
+此次固件经 COM37 下载，boot/app 校验均通过：
+
+- boot.bin：`b7dd3adeec09710f0cbfdaa2f854de6b4784290f57a227ae6125bb95094a3dab`
+- app.bin：`585fa20deaa4c20257896f0dae5aa05bb84629a8da70e20a65e4e3ae0c4a9f53`
+
+### VMware 内核串口与 panic 修复
+
+关闭测试虚拟机后，在其 `.vmx` 中添加串口文件输出，启动前保留原配置备份：
+
+```ini
+serial0.present = "TRUE"
+serial0.fileType = "file"
+serial0.fileName = "green2-kernel-serial.log"
+serial0.startConnected = "TRUE"
+serial0.yieldOnMsrRead = "TRUE"
+```
+
+Guest 中安装 `rpi/vmware-serial-console.cfg` 为
+`/etc/default/grub.d/99-green2-serial.cfg`，执行 `sudo update-grub` 后重启。
+`/proc/cmdline` 应含 `console=ttyS0,115200n8` 和 `earlycon=uart8250,io,0x3f8,115200n8`。
+日志在宿主机虚拟机目录中的 `green2-kernel-serial.log`，SSH 失效时仍可读取；
+不依赖截图。`panic=0` 保留崩溃现场，不自动重启。再次开机前先备份已有日志。
+
+本次已验证早期启动和运行期内核日志都能输出。之前的 panic 栈为
+`cleanup_net → addrconf_ifdown → rtw_inet6addr_notifier_call → __fortify_panic`：
+WHC 地址 notifier 收到 loopback 等其他设备的事件，却把其 `netdev_priv`
+当作 WHC 私有结构，用 `memcmp` 读取 9 字节，触发 FORTIFY。
+现改为先按 `netdev_ops` 确认设备属于 WHC，再访问私有数据；注销时先停止
+IPv4/IPv6 notifier，再排空工作队列。安装后，20 轮创建网络命名空间、
+添加 loopback IPv4/IPv6 地址并销毁的回归通过，未再触发该 panic。
+
+随后在停止发布、删除 NAN 接口时捕获到另一处 Oops：
+`nl80211_del_interface → nl80211_post_doit → dev_put(wdev->netdev)`。
+驱动在回调返回前释放了 `wireless_dev`，而 nl80211 仍持有对应 netdev 引用。
+现通过 `needs_free_netdev` / `priv_destructor` 在引用排空后释放两者；
+重复创建返回 `-EBUSY`，不再误清理现有接口；分配失败时先注销已注册网卡。
+USB 移除路径先在 RTNL 下关闭 NAN netdev，再获取 wiphy mutex 进行注销。
+
+还修正了 `prepare-radio.sh` 的停止顺序：先把 NAN netdev 置 down，
+再执行 NAN stop。该驱动为 NAN 附加了数据 netdev，若先 stop 后 down，
+cfg80211 会重复停止 NAN、扣减 opencount，导致 `wiphy_unregister` 永久等待。
+原始 `iw ... nan stop` 也应遵守上述顺序。
+修正后 20 轮创建/启动/关闭/删除、重复创建检查、整驱动卸载重载，以及
+NAN 保持 UP 时卸载驱动的回归均通过。测试 VM 暂固定在
+`7.0.0-38-generic`，配置位于 `/etc/default/grub.d/98-green2-test-kernel.cfg`；
+解除固定前需给新内核重新构建 WHC 和 btusb 补丁模块。
+
+### 2026-11-08：宿主机热点 TCP 测速
+
+Green2 通过 WHC USB 接入 VMware Ubuntu，连接 Windows 宿主机热点 `AIoT`。
+当前 `NAN_2G_ONLY=ON` 实际限制整个固件的频段，所以把无客户端的原
+5 GHz 热点切为 2.4 GHz 后测试，没有重新烧录固件。协商结果为
+Wi-Fi 6、信道 11（2462 MHz）、20 MHz、WPA3-SAE H2E、强制 PMF；
+RSSI 约 −46 至 −47 dBm，观测 TX PHY 速率约 103.2–114.7 Mbps。
+NAN 发布暂停，BLE 广播开启。测试不经过 Internet。
+
+Linux iperf3 3.20 客户端绑定 Green2 的 `192.168.137.162`，连接 Windows
+iperf3 3.21 服务端 `192.168.137.1:5201`。每项测试 15 秒，另省略开始 3 秒，
+均报告接收端有效 TCP 吞吐；上行指 Green2 → 宿主机，下行反之。
+
+| 条件 | 上行 Mbps | 下行 Mbps |
+| --- | ---: | ---: |
+| 默认省电，单流 3 次平均 | 8.53 | 6.66 |
+| 默认省电，单流范围 | 6.92–9.92 | 4.61–8.67 |
+| 默认省电，4 路并发 1 次 | 13.28 | 7.34 |
+| 关闭省电，单流 1 次 | 10.46 | 7.41 |
+
+同一 VM 经桥接以太网到宿主机的 5 秒 TCP 对照约 877 Mbps。
+关闭省电未消除低吞吐，具体无线/USB 数据路径瓶颈尚未定位；
+这不是 Green2 的峰值规格，也不是 NAN 数据链路吞吐测试。
+修复后的当前启动周期未观察到 Oops、panic 或 WHC 命令超时。
+原始 iperf JSON、路由/链路信息和串口现场保存在本机
+`codex-debug/green2-hotspot-throughput-20261108/`；热点口令不写入工程。
+结束后恢复 Wi-Fi 省电为 on，停止临时 iperf 服务，保留热点连接与 BLE 广播，
+NAN 发布仍暂停。热点保持 2.4 GHz 以匹配当前固件。
+
+### USB bulk 2048 字节对照配置
+
+模组配置 `module/green2_nan_usb_bt_usb_bulk2048.config` 和主机驱动配置
+`whc_host_linux/configs/amebagreen2_usb_nan_bulk2048_defconfig` 同时启用
+`CONFIG_WHC_USB_BULK_2048`（默认关闭）。模组 USB RX 容量从 1536 调为
+2048 字节，配套扩大 SKB 池；Linux RX URB 容量和 TX 长度上限从 1600
+调为 2048 字节。启动时检查模组 SKB 是否覆盖 RX 容量及预留头部，避免
+只扩大 DMA 接收长度而越过实际缓冲边界。
+
+这是传输缓冲容量调整，High-Speed 端点的 `wMaxPacketSize` 保持 512。
+每次发送仍使用实际帧长度，没有填充到 2048 字节，也没有新增 USB 聚合。
+测试 5 GHz 时，模组构建需显式指定 `NAN_2G_ONLY=OFF`；原开关会限制
+整个固件的频段。默认缓冲和 2048 缓冲的两份固件均采用双频配置对照。
+
+实板启动日志确认 SKB 容量从 1632 增至 2144 字节，USB RX 预留头部
+均为 64 字节；20 个 SKB 共多占 10240 字节，启动剩余堆差值与此一致。
+usbmon 确认 Linux 实际提交的 RX URB 从 1600 变为 2048 字节，
+数据帧的典型 TX 长度仍为 1530 字节。
+
+2026-11-08 实测：两版均连接 AIoT 的 5 GHz 信道 149 / 20 MHz，
+WPA3-SAE H2E、PMF、默认省电开启，BLE 广播开启、NAN 发布暂停。
+沿用上面的 iperf3 15 秒加 3 秒预热方法，单流各测 3 次，四流各测 1 次，
+均取接收端有效吞吐。
+
+| 缓冲配置 | 单流上行均值 Mbps | 单流下行均值 Mbps | 四流上行 Mbps | 四流下行 Mbps |
+| --- | ---: | ---: | ---: | ---: |
+| 默认（主机 1600 / 模组 1536） | 53.41 | 49.73 | 50.14 | 49.35 |
+| 主机与模组均为 2048 | 51.74 | 47.88 | 49.82 | 47.12 |
+
+本轮没有观察到扩大缓冲带来的吞吐收益，单流约低 3–4%；样本量有限，
+不能把该差异全部归因于缓冲大小。两版测速期间均未出现新的内核
+Oops/panic、WHC 超时或 USB 重置。切换前直接卸载仍关联的 STA 曾触发
+cfg80211 WARNING；后续先 `wpa_cli disconnect`、停 WPA 服务、关闭 STA
+接口，再卸载驱动，未再次触发该警告。此顺序规避不代表卸载路径已修复。
+
+Windows iperf3 在测试交接时偶尔拒绝或重置控制连接。脚本只对尚未建立
+任何测试流的请求重试，并保留失败 JSON；不重试或抹去已经开始传输的
+失败测试。完整原始数据、固件、驱动、usbmon、模组串口和内核日志位于
+本机 `codex-debug/green2-usb-bulk2048-20261108/`。
+结束时保留双频 2048 固件及对应主机驱动、AIoT 5 GHz 连接和 BLE 广播，
+停止临时 iperf 服务；NAN 发布仍暂停。本次结果是 STA 热点测速，
+不代表 NAN 吞吐或长期稳定性验证。

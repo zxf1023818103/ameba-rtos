@@ -134,6 +134,12 @@ int usbd_otp_init(usbd_otp_t *otp)
 	 * OTP capability bit on the SW configuration too: otherwise the descriptors advertise BT
 	 * while USB HCI vendor requests have no handler and STALL. */
 	otp->bt_en = ((HAL_READ32(OTPC_REG_BASE, SEC_OTP_SYSCFG0) & SEC_BIT_BT_FUNCTION_EN) == 0U) ? 0U : 1U;
+#if defined(CONFIG_BT_INIC_USB_SW_ENABLE) && CONFIG_BT_INIC_USB_SW_ENABLE
+	/* Flash-boot development boards need not provision the NIC-mode OTP
+	 * flag to expose the HCI controller already selected by the firmware. */
+	otp->bt_en = 1U;
+	RTK_LOGS(TAG, RTK_LOG_INFO, "USB BT enabled by firmware configuration\n");
+#endif
 #endif /* CONFIG_BT && CONFIG_BT_INIC_USB */
 
 	otp->mfg_str = (u8 *)usb_os_malloc(USBD_OTP_MAX_STR_LEN + 1U);

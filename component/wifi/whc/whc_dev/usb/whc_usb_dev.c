@@ -523,6 +523,14 @@ void whc_usb_dev_init(void)
 {
 	int ret;
 
+#ifndef WHCH_TXAGG
+	RTK_LOGI(TAG_WLAN_INIC, "USB bulk RX capacity=%u, SKB capacity=%d, reserve=%u\n",
+			 (unsigned int)USB_BUFSZ, skbpriv.skb_buf_max_size, (unsigned int)USB_SKB_RSVD_LEN);
+	if (USB_BUFSZ + USB_SKB_RSVD_LEN > (u32)skbpriv.skb_buf_max_size) {
+		RTK_LOGE(TAG_WLAN_INIC, "USB RX capacity exceeds SKB pool; refusing DMA init\n");
+		return;
+	}
+#endif
 	ret = usbd_init(&whc_usb_wifi_cfg);
 	if (ret != HAL_OK) {
 		RTK_LOGE(TAG_WLAN_INIC, "USBdevice init fail!\n");

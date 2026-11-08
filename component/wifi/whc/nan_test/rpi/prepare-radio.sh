@@ -13,7 +13,18 @@ case "$band" in
     *) echo "band must be 2GHz or dual" >&2; exit 2 ;;
 esac
 driver=$(basename "$(readlink -f "/sys/class/net/$base/device/driver")")
-[[ $driver == WHC_SDIO ]] || { echo "$base is not WHC_SDIO" >&2; exit 1; }
+# WHC_USB parents netdevs to the USB device; its driver binds the child interface.
+if [[ $driver == usb ]]; then
+    for binding in "$(readlink -f "/sys/class/net/$base/device")"/*:*/driver; do
+        if [[ $(basename "$(readlink -f "$binding")") == WHC_USB ]]; then
+            driver=WHC_USB
+            break
+        fi
+    done
+fi
+[[ $driver == WHC_SDIO || $driver == WHC_USB ]] || {
+    echo "$base is not a WHC_SDIO/WHC_USB interface" >&2; exit 1;
+}
 phy=$(readlink -f "/sys/class/net/$base/phy80211")
 [[ -n $phy && $(readlink -f /sys/class/net/nan0/phy80211) == "$phy" ]] || {
     echo "Create nan0 on the Green2 PHY first." >&2; exit 1;
@@ -40,17 +51,19 @@ install -d -m 700 /run/green2-nan
 exec 9>/run/green2-nan/service.lock
 flock -n 9 || { echo "NAN service bundle is running" >&2; exit 1; }
 printf 'Green2 %s, nan0 %s, bands %s\n' "$base" "$wdev" "${bands[*]}"
+# This vendor NAN wdev has a data netdev. Bring it down first: cfg80211
+# stops NAN on NETDEV_GOING_DOWN. Calling NAN stop while the netdev is UP
+# and then closing it stops NAN twice and unbalances cfg80211 opencount,
+# which can leave wiphy_unregister waiting forever during driver removal.
+ip link set nan0 down
 stop_status=0
 iw wdev "$wdev" nan stop || stop_status=$?
-# A newly created NAN netdev has never been started: nl80211 returns
-# -ENETDOWN (shell status 156). Other stop failures must not be ignored.
+# A new or already closed NAN netdev returns -ENETDOWN (shell status 156).
+# Other stop failures must not be ignored.
 if (( stop_status != 0 && stop_status != 156 )); then
     echo "NAN stop failed ($stop_status); refusing to restart." >&2
     exit "$stop_status"
 fi
-# This vendor driver attaches a netdev to NAN. cfg80211's wdev_running()
-# still sees that netdev UP after NAN stop and rejects start with EEXIST.
-ip link set nan0 down
 iw wdev "$wdev" nan start pref 112 bands "${bands[@]}"
 ip link set nan0 up
 echo "NAN radio configured; pairing cache preserved. Start run-services.sh next."

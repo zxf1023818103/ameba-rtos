@@ -1,0 +1,27 @@
+Subject: [PATCH] Bluetooth: btusb: skip ROM firmware setup for Green2 flash boot
+
+The AmebaGreen2 0bda:f851 composite device runs its controller firmware
+from the module's own flash. The generic Realtek vendor match calls
+btrtl_setup_realtek(), which sends unsupported ROM-loader commands and
+can reset the entire composite device, including the active WHC NIC.
+
+Match this device before the Realtek wildcard and retain generic HCI USB
+handling. This is for the flash-boot NAN + BT INIC USB configuration;
+it is not a replacement firmware loader for ROM-download configurations.
+
+Validated against Ubuntu linux-source-7.0.0 7.0.0-38.38.
+--- a/drivers/bluetooth/btusb.c
++++ b/drivers/bluetooth/btusb.c
+@@ -611,6 +611,12 @@ static const struct usb_device_id quirks_table[] = {
+ 	{ USB_DEVICE(0x0489, 0xe130), .driver_info = BTUSB_REALTEK |
+ 						     BTUSB_WIDEBAND_SPEECH },
+ 
++	/* AmebaGreen2 flash-boot composite: controller firmware is already
++	 * loaded by the module. Do not run Realtek ROM firmware download.
++	 * Keep this entry before the vendor-wide Realtek match below.
++	 */
++	{ USB_DEVICE_INTERFACE_CLASS(0x0bda, 0xf851, 0xe0) },
++
+ 	/* Realtek Bluetooth devices */
+ 	{ USB_VENDOR_AND_INTERFACE_INFO(0x0bda, 0xe0, 0x01, 0x01),
+ 	  .driver_info = BTUSB_REALTEK },

@@ -26,6 +26,11 @@
 #define USB_SKB_RSVD_LEN	N_BYTE_ALIGMENT(SKB_WLAN_TX_EXTRA_LEN - sizeof(struct whc_msg_info), 4)
 #endif
 
+#ifdef CONFIG_WHC_USB_BULK_2048
+#undef USB_BUFSZ
+#define USB_BUFSZ 2048U
+#endif
+
 #define WIFI_WHC_USB_STATUS_ACTIVE                       0
 #define WIFI_WHC_USB_STATUS_SUSPEND                      1
 #define WIFI_WHC_USB_STATUS_DISABLED                     2

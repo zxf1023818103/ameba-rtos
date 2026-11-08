@@ -269,7 +269,9 @@ exit:
 void bt_usbd_inic_init(void)
 {
 #if defined(CONFIG_WHC_INTF_USB) && CONFIG_WHC_INTF_USB
-	BT_LOGA("BT USBD INIC demo start\n");
+	/* WHC owns the composite USB device and dispatches its BT callbacks.
+	 * Starting another USB stack here would reset the Wi-Fi endpoints. */
+	BT_LOGA("BT HCI shares WHC USB composite device\n");
 #else
 	if (!osif_task_create(NULL, "bt_usbd_inic_thread", bt_usbd_inic_thread, NULL, 1024 * 4, CONFIG_USBD_INIC_INIT_THREAD_PRIORITY)) {
 		BT_LOGE("Create bt_usbd_inic_thread Err!!\n");

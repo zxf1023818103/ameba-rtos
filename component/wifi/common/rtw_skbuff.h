@@ -49,6 +49,12 @@
 #define WHCH_RX_SKB_RSVD_LEN	0
 #endif
 
+#if defined(CONFIG_WHC_INTF_USB) && defined(CONFIG_WHC_DEV) && defined(CONFIG_WHC_USB_BULK_2048)
+/* USB receives into skb->data after reserving Wi-Fi TX headroom. The pool
+ * must cover that headroom as well as the full DMA transfer capacity. */
+#undef MAX_SKB_BUF_SIZE
+#define MAX_SKB_BUF_SIZE MAX(MAX_SKB_BUF_SIZE_NORMAL, (2048 + SKB_WLAN_TX_EXTRA_LEN + SKB_CACHE_SZ) & ~(SKB_CACHE_SZ - 1))
+#endif
 
 /*TX reserve size before 802.3 pkt*/
 #define WLAN_ETHHDR_LEN	14

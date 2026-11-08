@@ -8,7 +8,7 @@ mkdir -p "$1"
 work=$(realpath "$1")
 python3 "$repo/tools/scripts/menuconfig.py" \
     -proj "$repo/component/soc/amebagreen2/project" -d "$work" \
-    --apply-file "$scripts/green2_nan_sdio.config"
+    --apply-file "${FIRMWARE_CONFIG:-$scripts/green2_nan_sdio.config}"
 printf '{"soc":{"name":"RTL8711Dx"}}\n' > "$work/soc_info.json"
 toolchain=()
 if [[ -n ${TOOLCHAIN_DIR:-} ]]; then

@@ -327,6 +327,14 @@ const struct net_device_ops rtw_ndev_ops_nan = {
 	.ndo_get_stats = rtw_ndev_get_stats,
 };
 
+static void rtw_nan_ndev_destructor(struct net_device *ndev)
+{
+	/* nl80211_post_doit still uses wdev->netdev after del_virtual_intf
+	 * returns. Keep wdev until the netdev's outstanding references drain. */
+	kfree(ndev->ieee80211_ptr);
+	ndev->ieee80211_ptr = NULL;
+}
+
 int rtw_nan_iface_alloc(struct wiphy *wiphy,
 						const char *name,
 						struct wireless_dev **nan_wdev,
@@ -338,16 +346,9 @@ int rtw_nan_iface_alloc(struct wiphy *wiphy,
 	int softap_addr_offset_idx = global_idev.wifi_user_config.softap_addr_offset_idx;
 	unsigned char nan_mac[ETH_ALEN];
 
-	if (global_idev.pwdev_global[2]) {
+	if (global_idev.pwdev_global[2] || global_idev.pndev[2]) {
 		dev_info(global_idev.pwhc_dev, "%s: nan_wdev already exists", __func__);
-		ret = -EBUSY;
-		goto exit;
-	}
-
-	if (global_idev.pndev[2]) {
-		dev_info(global_idev.pwhc_dev, "free old global_idev.pndev[2]=%x\n", global_idev.pndev[2]);
-		free_netdev(global_idev.pndev[2]);
-		global_idev.pndev[2] = NULL;
+		return -EBUSY;
 	}
 
 	/* alloc and init netdev */
@@ -403,6 +404,8 @@ int rtw_nan_iface_alloc(struct wiphy *wiphy,
 	wdev->netdev = ndev;
 	wdev->iftype = NL80211_IFTYPE_NAN;
 	ndev->ieee80211_ptr = wdev;
+	ndev->priv_destructor = rtw_nan_ndev_destructor;
+	ndev->needs_free_netdev = true;
 	global_idev.pwdev_global[2] = wdev;
 
 	*nan_wdev = wdev;
@@ -417,6 +420,9 @@ exit:
 	}
 
 	if (global_idev.pndev[2]) {
+		if (global_idev.pndev[2]->reg_state == NETREG_REGISTERED) {
+			unregister_netdevice(global_idev.pndev[2]);
+		}
 		free_netdev(global_idev.pndev[2]);
 		global_idev.pndev[2] = NULL;
 	}
@@ -426,51 +432,52 @@ exit:
 
 void rtw_nan_iface_free(struct wiphy *wiphy)
 {
-	bool rtnl_lock_need = !rtnl_is_locked();
+	/* del_virtual_intf supplies wiphy and owns RTNL + the wiphy mutex.
+	 * Bus removal passes NULL and must acquire both itself. rtnl_is_locked()
+	 * cannot tell whether this task or an unrelated task owns the lock. */
+	bool lock_needed = !wiphy;
+	struct wireless_dev *wdev;
+	struct net_device *ndev;
 
-	if (!global_idev.pwdev_global[2] && !global_idev.pndev[2]) {
-		return;
-	}
-
-	if (global_idev.pwdev_global[2]) {
-		if (rtnl_lock_need) {
-			rtnl_lock();
+	if (lock_needed) {
+		rtnl_lock();
+		/* NETDEV_GOING_DOWN takes the wiphy mutex itself. Match
+		 * nl80211_del_interface: close before acquiring that mutex. */
+		if (global_idev.pndev[2]) {
+			dev_close(global_idev.pndev[2]);
 		}
-		global_idev.pwdev_global[2]->netdev = NULL; // set to null for kernel to stop NAN
-		cfg80211_unregister_wdev(global_idev.pwdev_global[2]);
-		if (rtnl_lock_need) {
-			rtnl_unlock();
-		}
-		dev_dbg(global_idev.pwhc_dev, "unregister wdev done for NAN, global_idev.pndev[2]->reg_state=%d.", global_idev.pndev[2]->reg_state);
+		wiphy_lock(global_idev.pwiphy_global);
+	}
+	wdev = global_idev.pwdev_global[2];
+	ndev = global_idev.pndev[2];
+	if (!wdev && !ndev) {
+		goto unlock;
 	}
 
-	if (global_idev.pndev[2] && (global_idev.pndev[2]->reg_state == NETREG_REGISTERED)) {
-		global_idev.pwdev_global[2]->netdev = global_idev.pndev[2];
-		if (rtnl_lock_need) {
-			/* hold rtnl_lock in unregister_netdev. */
-			unregister_netdev(global_idev.pndev[2]);
-		} else {
-			unregister_netdevice(global_idev.pndev[2]);
-		}
+	if (wdev) {
+		/* NAN uses is_running, even after nl80211 has closed its vendor
+		 * data netdev. Restore the pointer before returning to nl80211. */
+		wdev->netdev = NULL;
+		cfg80211_unregister_wdev(wdev);
+		wdev->netdev = ndev;
 	}
 
-	dev_info(global_idev.pwhc_dev, "unregister netdev done for NAN.");
-
-	if (global_idev.pwdev_global[2]) {
-		kfree((u8 *)global_idev.pwdev_global[2]);
-		global_idev.pwdev_global[2] = NULL;
-		dev_info(global_idev.pwhc_dev, "remove wdev done for NAN.");
-		/* remove wireless_dev in ndev. */
-		global_idev.pndev[2]->ieee80211_ptr = NULL;
-	}
-	if (global_idev.pndev[2]) {
-		free_netdev(global_idev.pndev[2]);
-		global_idev.pndev[2] = NULL;
+	if (ndev && ndev->reg_state == NETREG_REGISTERED) {
+		unregister_netdevice(ndev);
 	}
 
+	/* Core releases ndev and its wdev through priv_destructor after
+	 * nl80211_post_doit drops its reference and releases RTNL. */
+	global_idev.pwdev_global[2] = NULL;
+	global_idev.pndev[2] = NULL;
 	whc_host_deinit_nan();
+	dev_info(global_idev.pwhc_dev, "unregistered NAN; freeing after last reference.\n");
 
-	return;
+unlock:
+	if (lock_needed) {
+		wiphy_unlock(global_idev.pwiphy_global);
+		rtnl_unlock();
+	}
 }
 
 #endif
@@ -597,6 +604,19 @@ void rtw_ndev_unregister(void)
 #endif
 }
 
+/* Address notifiers receive events for every netdev, including loopback
+ * devices with no private allocation. Identify our devices without touching
+ * another driver's netdev_priv(), which is neither sized nor typed for WHC. */
+static bool rtw_is_whc_netdev(const struct net_device *ndev)
+{
+	return ndev->netdev_ops == &rtw_ndev_ops ||
+		   ndev->netdev_ops == &rtw_ndev_ops_ap
+#ifdef CONFIG_NAN
+		   || ndev->netdev_ops == &rtw_ndev_ops_nan
+#endif
+		   ;
+}
+
 /* IPv4, IPv6 IP addr notifier */
 static int rtw_inetaddr_notifier_call(struct notifier_block *nb, unsigned long action, void *data)
 {
@@ -608,7 +628,7 @@ static int rtw_inetaddr_notifier_call(struct notifier_block *nb, unsigned long a
 	}
 
 	ndev = ifa->ifa_dev->dev;
-	if (memcmp(rtw_netdev_label(ndev), WHC_LABEL, strlen(WHC_LABEL))) {
+	if (!rtw_is_whc_netdev(ndev)) {
 		return NOTIFY_DONE;
 	}
 
@@ -640,7 +660,7 @@ static int rtw_inet6addr_notifier_call(struct notifier_block *nb, unsigned long 
 	}
 
 	ndev = inet6_ifa->idev->dev;
-	if (memcmp(rtw_netdev_label(ndev), WHC_LABEL, strlen(WHC_LABEL))) {
+	if (!rtw_is_whc_netdev(ndev)) {
 		return NOTIFY_DONE;
 	}
 
@@ -683,11 +703,12 @@ void rtw_inetaddr_notifier_register(void)
 
 void rtw_inetaddr_notifier_unregister(void)
 {
-	cancel_work_sync(&whc_netinfo_update_work);
 	unregister_inetaddr_notifier(&rtw_inetaddr_notifier);
 #if IS_ENABLED(CONFIG_IPV6)
 	unregister_inet6addr_notifier(&rtw_inet6addr_notifier);
 #endif
+	/* Stop producers before draining work they can schedule. */
+	cancel_work_sync(&whc_netinfo_update_work);
 }
 
 int rtw_netdev_probe(struct device *pdev)

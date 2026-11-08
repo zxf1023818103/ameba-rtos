@@ -9,7 +9,18 @@ base=${1:-wlan0}
 bundle=$(cd -- "$(dirname -- "$0")" && pwd)
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 driver=$(basename "$(readlink -f "/sys/class/net/$base/device/driver")")
-[[ $driver == WHC_SDIO ]] || { echo "$base is not WHC_SDIO" >&2; exit 1; }
+# WHC_USB parents netdevs to the USB device; its driver binds the child interface.
+if [[ $driver == usb ]]; then
+    for binding in "$(readlink -f "/sys/class/net/$base/device")"/*:*/driver; do
+        if [[ $(basename "$(readlink -f "$binding")") == WHC_USB ]]; then
+            driver=WHC_USB
+            break
+        fi
+    done
+fi
+[[ $driver == WHC_SDIO || $driver == WHC_USB ]] || {
+    echo "$base is not a WHC_SDIO/WHC_USB interface" >&2; exit 1;
+}
 phy=$(readlink -f "/sys/class/net/$base/phy80211")
 [[ -n $phy && $(readlink -f /sys/class/net/nan0/phy80211) == "$phy" ]] || {
     echo "Create nan0 on the Green2 PHY first (see README)." >&2; exit 1;

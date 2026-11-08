@@ -188,9 +188,10 @@ endif()
 
 if(AMEBA_GREEN2_NAN_PREBUILT_LIBRARY AND CONFIG_WHC_DEV)
     if(NOT AMEBA_GREEN2_NAN_PASN_CIPHER_FIX OR NOT CONFIG_AMEBAGREEN2 OR
-       NOT CONFIG_WIFI_NAN_ENABLE OR NOT CONFIG_WHC_INTF_SPDIO OR
+       NOT CONFIG_WIFI_NAN_ENABLE OR
+       NOT (CONFIG_WHC_INTF_SPDIO OR CONFIG_WHC_INTF_USB) OR
        NOT release_target_name STREQUAL "wifi_whc_dev")
-        message(FATAL_ERROR "Prebuilt NAN library requires the verified Green2 NAN/SPDIO configuration and cipher fix option")
+        message(FATAL_ERROR "Prebuilt NAN library requires Green2 NAN with SDIO/USB WHC and cipher fix option")
     endif()
     set(release_target_name wifi_whc_dev_nan_fixed)
     set(nan_fixed_lib "${c_SDK_LIB_APPLICATION_DIR}/lib_${release_target_name}.a")

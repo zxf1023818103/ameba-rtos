@@ -40,10 +40,10 @@
 #define UART_RTS    _PA_29
 #elif defined(CONFIG_AMEBAGREEN2)
 #define UART_INDEX  0
-#define UART_TX     _PA_4
-#define UART_RX     _PA_5
-#define UART_CTS    _PA_6
-#define UART_RTS    _PA_7
+#define UART_TX     CONFIG_BT_INIC_H4_TX_PIN
+#define UART_RX     CONFIG_BT_INIC_H4_RX_PIN
+#define UART_CTS    CONFIG_BT_INIC_H4_CTS_PIN
+#define UART_RTS    CONFIG_BT_INIC_H4_RTS_PIN
 #elif defined(CONFIG_RTL8720F)
 #define UART_INDEX  0
 #define UART_TX     _PA_13
@@ -275,6 +275,9 @@ void bt_inic_h4_init(void)
 
 	PAD_PullCtrl(UART_TX, GPIO_PuPd_UP); /* pull up Tx/Rx pin */
 	PAD_PullCtrl(UART_RX, GPIO_PuPd_UP); /* pull up Tx/Rx pin */
+#if defined(CONFIG_AMEBAGREEN2)
+	PAD_PullCtrl(UART_CTS, GPIO_PuPd_UP); /* Do not transmit with disconnected host CTS. */
+#endif
 
 	/* Enable UART
 	 * Use Flow Control (When rx FIFO reaches level, RTS will be pulled high)
@@ -301,6 +304,13 @@ void bt_inic_h4_init(void)
 
 	/* Enable Uart High Rate Rx Path */
 	UART_RxCmd(UART_DEV, ENABLE);
+#if defined(CONFIG_AMEBAGREEN2)
+	BT_LOGA("BT H4 UART%d 115200 8N1 RTS/CTS: TX=P%c%u RX=P%c%u CTS=P%c%u RTS=P%c%u\r\n",
+			UART_INDEX, 'A' + PORT_NUM(UART_TX), PIN_NUM(UART_TX),
+			'A' + PORT_NUM(UART_RX), PIN_NUM(UART_RX),
+			'A' + PORT_NUM(UART_CTS), PIN_NUM(UART_CTS),
+			'A' + PORT_NUM(UART_RTS), PIN_NUM(UART_RTS));
+#endif
 	BT_LOGA("BT UART Init OK!\r\n");
 }
 

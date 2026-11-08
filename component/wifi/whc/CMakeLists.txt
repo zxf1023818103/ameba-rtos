@@ -59,9 +59,12 @@ option(AMEBA_GREEN2_NAN_PASN_CIPHER_FIX
     "Experimental PASN response cipher fix for the verified Green2 WHC library" OFF)
 set(green2_nan_cipher_fix_active FALSE)
 if(AMEBA_GREEN2_NAN_PASN_CIPHER_FIX AND CONFIG_AMEBAGREEN2 AND CONFIG_WHC_DEV)
-    if(NOT CONFIG_WIFI_NAN_ENABLE OR NOT CONFIG_WHC_INTF_SPDIO OR
+    # SDIO and USB use the same WHC device archive and NAN object layouts.
+    # Keep the library/ABI checks below for both host transports.
+    if(NOT CONFIG_WIFI_NAN_ENABLE OR
+       NOT (CONFIG_WHC_INTF_SPDIO OR CONFIG_WHC_INTF_USB) OR
        CONFIG_WHC_WPA_SUPPLICANT_OFFLOAD OR CONFIG_WHC_DEV_TCPIP_KEEPALIVE OR CONFIG_MP_INCLUDED)
-        message(FATAL_ERROR "Green2 NAN cipher fix requires the verified NAN/SPDIO WHC configuration")
+        message(FATAL_ERROR "Green2 NAN cipher fix requires NAN with SDIO/USB WHC in WPAoH mode")
     endif()
     # The wrappers use private layouts across NDL, NDP and peer helpers.
     file(SHA256 "${c_SDK_LIB_APPLICATION_DIR}/lib_wifi_whc_dev.a" nan_vendor_sha256)

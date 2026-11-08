@@ -75,6 +75,14 @@ config WHC_CMD_PATH
 	bool "WHC command path"
 	default y
 
+config WHC_USB_BULK_2048
+	bool "Use 2048-byte USB bulk buffers"
+	depends on WHC_HCI_USB && AMEBAGREEN2 && !WHCH
+	default n
+	help
+	  Increase non-aggregated RX URB capacity and the TX size limit to
+	  2048 bytes. Endpoint MPS and actual packet lengths are unchanged.
+
 config FW_DOWNLOAD
 	bool "Firmware download over the host interface"
 	depends on (WHC_HCI_SDIO && (AMEBAGREEN2 || AMEBAX)) || (WHC_HCI_USB && AMEBAGREEN2) || (WHC_HCI_GSPI && AMEBAGREEN2)
