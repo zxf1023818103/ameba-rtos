@@ -6,6 +6,43 @@
 #endif
 
 struct whc_usb_priv_t whc_usb_priv = {0};
+static u8 whc_usb_configured;
+
+#ifdef GREEN2_NAN_USB_RX_RESERVE
+#include "whc_dev_nan_usb_control.h"
+/* The USB OUT buffers and Wi-Fi RX/TX share skbpriv. A stalled NAN TX queue
+ * must not consume the last RX buffers or hold all three USB OUT endpoints:
+ * both PASN reception and host control replies would then be starved.
+ */
+static u32 nan_usb_congestion_drops;
+static u32 nan_usb_drop_log_ms;
+
+static int whc_usb_nan_control(const struct whc_msg_info *msg, u32 length)
+{
+	u32 offset = sizeof(*msg);
+	if (length < offset || msg->pad_len > length - offset) {
+		return 0;
+	}
+	offset += msg->pad_len;
+	if (msg->data_len > length - offset) {
+		return 0;
+	}
+	return green2_nan_usb_control_frame((const u8 *)msg + offset, msg->data_len);
+}
+
+static void whc_usb_nan_record_drop(void)
+{
+	u32 now = rtos_time_get_current_system_time_ms();
+	nan_usb_congestion_drops++;
+	if ((u32)(now - nan_usb_drop_log_ms) >= 1000) {
+		nan_usb_drop_log_ms = now;
+		/* The USB IRQ task has a small stack: avoid newlib printf here. */
+		RTK_LOGS(NOTAG, RTK_LOG_INFO, "[NANUSB] congestion drops=%u skb_free=%d\n",
+				 nan_usb_congestion_drops,
+				 skbpriv.skb_buff_num - skbpriv.skb_buff_used);
+	}
+}
+#endif
 
 u8 wifi_whc_usb_status = WIFI_WHC_USB_STATUS_ACTIVE;
 
@@ -269,8 +306,28 @@ static void whc_usb_dev_irq_task(void)
 				new_skb = skb_rcv;  // not need to malloc new skb
 			} else {
 				msg_info = (struct whc_msg_info *)skb_rcv->data;
+#ifdef GREEN2_NAN_USB_RX_RESERVE
+				/* Reserve RX headroom even for short JPEG DATA fragments;
+				 * only identified control traffic may use this headroom. */
+				if (msg_info->wlan_idx == NAN_WLAN_INDEX &&
+					(skbpriv.skb_buff_num - skbpriv.skb_buff_used) < 16 &&
+					!whc_usb_nan_control(msg_info, len)) {
+					/* No skb offsets have changed yet. Reuse this OUT buffer;
+					 * dropping one data packet keeps control/RX progressing. */
+					whc_usb_nan_record_drop();
+					new_skb = skb_rcv;
+					goto rearm_rx;
+				}
+#endif
 				if (((skbpriv.skb_buff_num - skbpriv.skb_buff_used) < 2) ||
 					((new_skb = dev_alloc_skb(USB_BUFSZ, USB_SKB_RSVD_LEN)) == NULL)) {
+#ifdef GREEN2_NAN_USB_RX_RESERVE
+					if (msg_info->wlan_idx == NAN_WLAN_INDEX) {
+						whc_usb_nan_record_drop();
+						new_skb = skb_rcv;
+						goto rearm_rx;
+					}
+#endif
 					whc_usb_priv.irq_info.wait_xmit_skb = 1;
 					break;
 				}
@@ -282,6 +339,9 @@ static void whc_usb_dev_irq_task(void)
 				whc_usb_priv.rx_skb_addr[EPNUM_TO_IDX(ep_num)] = (u8 *)new_skb;
 			}
 
+#ifdef GREEN2_NAN_USB_RX_RESERVE
+rearm_rx:
+#endif
 			whc_usb_priv.irq_info.rxdone_epnum[whc_usb_priv.irq_info.task_ridx] = 0;
 			whc_usb_priv.irq_info.len[whc_usb_priv.irq_info.task_ridx] = 0;
 			whc_usb_priv.irq_info.task_ridx = (whc_usb_priv.irq_info.task_ridx + 1) % (WIFI_WHC_USB_BULKOUT_EP_NUM);
@@ -373,6 +433,7 @@ int whc_usb_dev_rxbuf_config_cb(void)
 #if defined(CONFIG_BT) && defined(CONFIG_BT_INIC_USB)
 	bt_inic_set_config();
 #endif
+	whc_usb_configured = 1;
 	return 0;
 }
 
@@ -409,6 +470,7 @@ static int whc_usb_dev_deinit_cb(void)
 #endif
 	struct whc_txbuf_info_t *whc_txbuf = NULL;
 	u8 i;
+	whc_usb_configured = 0;
 
 	// free tx buffer
 	if (whc_usb_priv.tx_buf) {
@@ -487,6 +549,7 @@ static int whc_usb_dev_setup_cb(usb_setup_req_t *req, u8 *buf)
 
 static int whc_usb_dev_clear_config_cb(void)
 {
+	whc_usb_configured = 0;
 	return HAL_OK;
 }
 
@@ -531,21 +594,25 @@ void whc_usb_dev_init(void)
 		return;
 	}
 #endif
-	ret = usbd_init(&whc_usb_wifi_cfg);
-	if (ret != HAL_OK) {
-		RTK_LOGE(TAG_WLAN_INIC, "USBdevice init fail!\n");
-	}
 
-	ret = usbd_whc_init(&whc_usb_dev_cb);
-	if (ret != HAL_OK) {
-		RTK_LOGE(TAG_WLAN_INIC, "USB whc init fail!\n");
+#if defined(CONFIG_AMEBAGREEN2) && CONFIG_AMEBAGREEN2 && defined(CONFIG_BT_INIC_USB) && CONFIG_BT_INIC_USB
+	/* btusb can send HCI Reset before WHC's host-side Wi-Fi-on request.
+	 * Initialize both radios before starting the USB core, independent of
+	 * the order in which the host binds the composite interfaces. */
+	if (!wifi_is_running(STA_WLAN_INDEX)) {
+		ret = wifi_on(RTW_MODE_STA);
+		if (ret != RTK_SUCCESS || !wifi_is_running(STA_WLAN_INDEX)) {
+			RTK_LOGE(TAG_WLAN_INIC, "Wi-Fi init failed (%d); USB not started\n", ret);
+			return;
+		}
 	}
-
-#if defined (CONFIG_AMEBAGREEN2)
-	usbd_cg_register();
-	SOCPS_SetAPWakeEvent(WAKE_SRC_USB, ENABLE);
+	RTK_LOGI(TAG_WLAN_INIC, "Wi-Fi ready before USB\n");
+	if (bt_inic_usb_prepare() != HAL_OK) {
+		RTK_LOGE(TAG_WLAN_INIC, "BT init failed; USB not started\n");
+		return;
+	}
+	RTK_LOGI(TAG_WLAN_INIC, "BT controller ready before USB\n");
 #endif
-
 	rtos_mutex_create_static(&whc_usb_priv.tx_lock);
 	rtos_sema_create_static(&whc_usb_priv.usb_tx_sema, 1, 0xFFFFFFFF);
 	rtos_sema_create_static(&whc_usb_priv.usb_irq_sema, 0, 0xFFFFFFFF);
@@ -563,6 +630,25 @@ void whc_usb_dev_init(void)
 		RTK_LOGI(NOTAG, "Create whc_usb_dev_irq_task Err!!\n");
 	}
 
+	/* All callbacks must be ready before the host can configure USB. */
+	ret = usbd_init(&whc_usb_wifi_cfg);
+	if (ret != HAL_OK) {
+		RTK_LOGE(TAG_WLAN_INIC, "USBdevice init fail!\n");
+		return;
+	}
+
+	ret = usbd_whc_init(&whc_usb_dev_cb);
+	if (ret != HAL_OK) {
+		RTK_LOGE(TAG_WLAN_INIC, "USB whc init fail!\n");
+		usbd_deinit();
+		return;
+	}
+
+#if defined (CONFIG_AMEBAGREEN2)
+	usbd_cg_register();
+	SOCPS_SetAPWakeEvent(WAKE_SRC_USB, ENABLE);
+#endif
+
 	RTK_LOGI(TAG_WLAN_INIC, "USB device init done!\n");
 }
 
@@ -572,6 +658,12 @@ void whc_usb_dev_send(u8 *buf, u16 len, void *buf_alloc, u8 is_skb)
 	int i = 0;
 	struct whc_txbuf_info_t *buf_info = NULL;
 	struct whc_buf_info *pbuf;
+
+	/* Wi-Fi startup can report netif information before USB is available.
+	 * The host's Wi-Fi-on request will replay that information. */
+	if (!whc_usb_configured) {
+		goto drop;
+	}
 
 	buf_info = whc_dev_alloc_buf_info(buf, len, buf_alloc, is_skb);
 	if (!buf_info) {

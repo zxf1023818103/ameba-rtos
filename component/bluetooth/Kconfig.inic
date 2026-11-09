@@ -45,6 +45,13 @@ choice
 endchoice
 
 if AMEBAGREEN2 && BT_INIC_H4
+config BT_INIC_H4_FLOW_CONTROL
+    bool "H4 UART0 RTS/CTS hardware flow control"
+    default y
+    help
+        Disable only when the host and board use a two-wire H4 connection.
+        The host UART must also disable RTS/CTS flow control.
+
 config BT_INIC_H4_TX_PIN
     int "H4 UART0 TX pin (PA=0, PB=32, PC=64)"
     range 0 95

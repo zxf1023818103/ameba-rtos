@@ -1,0 +1,26 @@
+/dts-v1/;
+/plugin/;
+
+/* Experimental Pi 4B external SDIO overclock, beyond Green2's rated 50 MHz.
+ * 2026-11-09: host reached 80 MHz, but this Green2 fixture failed SDIO
+ * initialization with -ETIMEDOUT, including after resetting the module.
+ * Retained for diagnosis; use the validated clock profile for normal tests.
+ * BCM2835_CLOCK_EMMC is clock ID 28 (the external fe300000 controller).
+ * The root SD card uses EMMC2; do not change that clock.
+ * Set the controller input to 160 MHz so its even divider produces 80 MHz.
+ * Merely setting sdio_overclock=80 with the stock 250 MHz input yields 62.5 MHz.
+ */
+/ {
+    compatible = "brcm,bcm2711";
+
+    fragment@0 {
+        target-path = "/soc/mmc@7e300000";
+        __overlay__ {
+            assigned-clocks = <&clocks 28>;
+            assigned-clock-rates = <160000000>;
+            /* Keep the SDIO HS request at 50 MHz; the host overrides it. */
+            max-frequency = <50000000>;
+            brcm,overclock-50 = <80>;
+        };
+    };
+};

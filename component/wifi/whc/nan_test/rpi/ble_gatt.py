@@ -84,7 +84,9 @@ class Characteristic(Properties):
     def WriteValue(self, value, options):
         if int(options.get("offset", 0)):
             raise dbus.exceptions.DBusException("Invalid offset", name="org.bluez.Error.InvalidOffset")
-        if bytes(value) != b"BLE-PING\n":
+        # ATT preserves write boundaries; interactive clients may omit a line
+        # ending. Keep accepting the newline used by the automated client.
+        if bytes(value) not in (b"BLE-PING", b"BLE-PING\n", b"BLE-PING\r\n"):
             raise dbus.exceptions.DBusException("Expected BLE-PING", name="org.bluez.Error.NotSupported")
         print("BLE-PING received", flush=True)
         self.update(b"BLE-PONG\n")
@@ -117,9 +119,13 @@ class Application(dbus.service.Object):
 class Advertisement(Properties):
     interface = ADV
 
+    def __init__(self, bus, path, name):
+        super().__init__(bus, path)
+        self.name = name
+
     def properties(self):
         return {"Type": "peripheral", "ServiceUUIDs": dbus.Array([SERVICE_UUID], signature="s"),
-                "LocalName": "Green2 BLE"}
+                "LocalName": self.name}
 
     @dbus.service.method(ADV)
     def Release(self):
@@ -129,6 +135,7 @@ class Advertisement(Properties):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--adapter", required=True, help="Green2 USB HCI, for example hci1")
+    parser.add_argument("--name", default="Green2 BLE", help="advertised name for this board")
     args = parser.parse_args()
     device = (Path("/sys/class/bluetooth") / args.adapter / "device").resolve()
     if not any((p / "idVendor").exists() and
@@ -141,7 +148,7 @@ def main():
     adapter = bus.get_object("org.bluez", "/org/bluez/" + args.adapter)
     dbus.Interface(adapter, PROPS).Set("org.bluez.Adapter1", "Powered", dbus.Boolean(True))
     app = Application(bus)
-    advertisement = Advertisement(bus, ROOT + "_advertisement")
+    advertisement = Advertisement(bus, ROOT + "_advertisement", args.name)
     loop = GLib.MainLoop()
     failed = []
 

@@ -15,6 +15,7 @@
 #include <stddef.h>
 #include <sys/stat.h>
 #include "nan_event.h"
+#include "nan_cache_file.h"
 #include "rtw_nan_cmd_api.h"
 #include "rtw_nan_vendor_def.h"
 
@@ -910,16 +911,12 @@ static void _evt_handler(int evt_id, const void *payload, size_t payload_len)
 		if (!_copy_evt_data((char *)&nik_cache_data, sizeof(nik_cache_data), payload, payload_len)) {
 			break;
 		}
-		FILE *f;
 		mkdir("/var/lib/nan", 0700);
-		f = fopen("/var/lib/nan/nik_cache", "wb");
-		if (f) {
-			fchmod(fileno(f), 0600);
-			fwrite(&nik_cache_data, sizeof(nik_cache_data), 1, f);
-			fflush(f);
-			fsync(fileno(f));
-			fclose(f);
+		if (!nan_cache_write_atomic("/var/lib/nan/nik_cache", &nik_cache_data,
+					    sizeof(nik_cache_data))) {
 			INFO_PRINT("[rtw_event] save nik cache data\n");
+		} else {
+			INFO_PRINT("[rtw_event] failed to save nik cache data\n");
 		}
 		break;
 	}

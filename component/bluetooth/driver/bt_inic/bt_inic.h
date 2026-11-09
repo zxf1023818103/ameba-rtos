@@ -6,6 +6,9 @@
 void bt_usbd_inic_init(void);
 
 int bt_inic_usb_init(void);
+#if defined(CONFIG_AMEBAGREEN2) && CONFIG_AMEBAGREEN2 && defined(CONFIG_WHC_INTF_USB) && CONFIG_WHC_INTF_USB
+int bt_inic_usb_prepare(void);
+#endif
 void bt_inic_usb_deinit(void);
 int bt_inic_usb_hci_cmd_hdl(uint8_t *buf, uint16_t len);
 int bt_inic_usb_hci_acl_hdl(uint8_t *buf, uint16_t len);

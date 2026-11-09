@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+"""Native MJPEG/multipart over SRT, bound only to the NAN link-local address."""
+import fcntl
+import os
+from pathlib import Path
+import signal
+import subprocess
+import time
+import json
+
+def find_camera():
+    matches = []
+    for node in Path('/sys/class/video4linux').glob('video*'):
+        if (node / 'index').read_text().strip() != '0':
+            continue
+        for parent in (node / 'device').resolve().parents:
+            try:
+                if ((parent / 'idVendor').read_text().strip(),
+                    (parent / 'idProduct').read_text().strip()) == ('30c9', '00a6'):
+                    matches.append('/dev/' + node.name)
+                    break
+            except FileNotFoundError:
+                pass
+    if len(matches) > 1:
+        raise SystemExit('Multiple matching cameras; select one before streaming')
+    return matches[0] if matches else None
+
+# Do not expose the camera on the VM's management/Ethernet interface.
+def nan_endpoint():
+    result = subprocess.run(['ip', '-j', '-6', 'addr', 'show', 'dev', 'nan0'],
+                            capture_output=True, text=True)
+    if result.returncode == 0:
+        for iface in json.loads(result.stdout):
+            if 'UP' not in iface.get('flags', []):
+                continue
+            for item in iface.get('addr_info', []):
+                flags = item.get('flags', [])
+                if (item.get('scope') == 'link' and not item.get('tentative', False)
+                        and not item.get('dadfailed', False)
+                        and 'tentative' not in flags and 'dadfailed' not in flags):
+                    # Link-local IPv6 sockets retain the numeric scope ID, not
+                    # the name. A new nan0 with the same address is a new bind.
+                    return iface['ifindex'], item['local']
+    return None
+
+
+def stop_child(child):
+    if child.poll() is not None:
+        return
+    child.terminate()
+    try:
+        child.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        child.kill()
+        child.wait()
+
+
+def supervise(camera, endpoint_query=nan_endpoint, launch=subprocess.Popen):
+    stopping = False
+    child = None
+
+    def stop(signum, frame):
+        nonlocal stopping
+        stopping = True
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    bound = None
+    try:
+        while not stopping:
+            endpoint = endpoint_query()
+            if child is not None and endpoint != bound:
+                print(f'NAN interface changed {bound} -> {endpoint}; rebinding SRT', flush=True)
+                stop_child(child)
+                child = None
+            if child is None and endpoint is not None:
+                bound = endpoint
+                index, address = bound
+                command = [str(Path(os.environ['SNAP']) / 'bin/camera-srt'), camera, address]
+                print(f'SRT camera={camera} USB=30c9:00a6 bind=[{address}%nan0]:9000 '
+                      f'ifindex={index} MJPEG 1280x720@30 latest-frame multipart '
+                      'no-encoding latency=150ms late-drop=on', flush=True)
+                child = launch(command)
+            if child is None:
+                time.sleep(0.25)
+                continue
+            try:
+                result = child.wait(timeout=0.25)
+            except subprocess.TimeoutExpired:
+                continue
+            if stopping:
+                return 0
+            # If the interface vanished during startup, wait for its successor.
+            if endpoint_query() != bound:
+                child = None
+                continue
+            return result or 1  # snapd restarts an unexpectedly exited sender
+        return 0
+    finally:
+        if child is not None:
+            stop_child(child)
+
+
+def main():
+    root = Path(os.environ['SNAP_COMMON']) / 'srt'
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with (root / 'camera.lock').open('w') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        camera = find_camera()
+        while camera is None:
+            time.sleep(2)
+            camera = find_camera()
+        return supervise(camera)
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

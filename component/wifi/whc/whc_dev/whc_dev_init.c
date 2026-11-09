@@ -31,14 +31,21 @@ void whc_dev_init(void)
 #endif
 
 	wifi_set_user_config();
+#ifdef GREEN2_NAN_USB_RX_RESERVE
+	/* Repeated NDP creation overlaps retiring peers with a new video peer.
+	 * The default 20-buffer USB pool can be exhausted before old TX drains.
+	 * Keep RX/control headroom with 160 buffers (about 232 KiB extra versus
+	 * 20 at the default skb size). Do not shrink a larger user pool. */
+	if (wifi_user_config.skb_num_np < 160) {
+		wifi_user_config.skb_num_np = 160;
+	}
+#endif
 	/* sync usrcfg to rom2flash mirror unconditionally (wpaoD or wpaoH), otherwise
 	 * bw_40_enable etc. stay at compile-time zero (RSWLANDIOT-16608) */
 	wifi_set_rom2flash_user_config();
 
 	/* init skb pool early(before wifi_on) to ensure the intf path is ready, because whc uses skb as rxbuf */
 	init_skb_pool(wifi_user_config.skb_num_np, wifi_user_config.skb_buf_size, SKB_CACHE_SZ);
-
-	whc_dev_intf_init();
 
 #ifdef CONFIG_WHC_DEV_TCPIP_KEEPALIVE
 	whc_dev_pktfilter_init();
@@ -50,6 +57,10 @@ void whc_dev_init(void)
 #ifdef CONFIG_WHC_WIFI_API_PATH
 	whc_dev_api_init();
 #endif
+
+	/* The USB composite path starts Wi-Fi before enumeration. Its startup
+	 * callbacks need the WHC queues and event mutexes to exist already. */
+	whc_dev_intf_init();
 
 #ifdef CONFIG_LOG_FWD
 	rtk_log_forward_init(whc_log_output);

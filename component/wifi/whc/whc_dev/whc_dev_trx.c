@@ -6,6 +6,9 @@
 #include "whc_dev.h"
 
 struct xmit_priv_t dev_xmit_priv;
+#ifdef GREEN2_NAN_STALE_TX_FIX
+extern void green2_nan_xmit_skb(struct sk_buff *skb);
+#endif
 
 /**
  * @brief  xmit handler to get frames from xmit queue and forward to WIFI stack
@@ -26,7 +29,11 @@ void whc_dev_xmit_tasklet(void)
 	p_node = whc_msg_dequeue(p_xmit_queue);
 	while (p_node) {
 		skb = (struct sk_buff *) p_node->msg;
+#ifdef GREEN2_NAN_STALE_TX_FIX
+		green2_nan_xmit_skb(skb);
+#else
 		wifi_if_send_skb((int)skb->dev, skb);
+#endif
 
 		/* release node */
 		rtos_mem_free((u8 *)p_node);

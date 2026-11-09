@@ -8,6 +8,9 @@
 iPhone 的 Flash Studio NAN 页面。最终测试从 SD 卡启动；原先的 SanDisk
 USB 启动盘不属于本次成功验证的配置。
 
+Ubuntu Core 26 / VMware 的 Green2 原生 USB NAN + BLE 构建、启动和实测
+说明见 [ubuntu-core/README.md](ubuntu-core/README.md)。
+
 ## 文件与修复范围
 
 | 内容 | 源码/文件 |
@@ -104,6 +107,52 @@ PA=0..31、PB=32..63、PC=64..95；需核对实际板卡连线。
 本配置不启用新增休眠策略。2026-11-07 已验证编译、COM33 烧录校验及启动日志中
 H4/SDIO 初始化；外部 HCI 接线后的命令收发仍需验证。
 
+### J11 40 针与树莓派直接对插：两线 HCI
+
+对于 PC2/PC4 分别接到 J11 32/33 脚的板卡，可使用下面的独立配置。
+该引脚定义来自本次板卡的 J11 原理图，与上述 EV711FL0 R05 的 J21 编号不同；
+必须确认 PC2/PC4 未用于当前启动 Flash。
+
+| 物理针脚 | 树莓派 4B | Green2 |
+| --- | --- | --- |
+| 32 | GPIO12 / UART5 TX | PC2 / UART0 RX |
+| 33 | GPIO13 / UART5 RX | PC4 / UART0 TX |
+| 6 等地脚 | GND | GND |
+
+```sh
+FIRMWARE_CONFIG="$PWD/component/wifi/whc/nan_test/module/green2_nan_sdio_bt_h4_rpi_header.config" \
+NAN_2G_ONLY=OFF TOOLCHAIN_DIR="$HOME/rtk-toolchain" \
+  component/wifi/whc/nan_test/module/build-firmware.sh /tmp/green2-hci-header
+```
+
+该配置使用 115200 baud、8N1、H4，双方关闭 RTS/CTS。配置片段使用
+`CONFIG_BT_INIC_H4_FLOW_CONTROL=n` 显式关闭选项；合并片段时不能依靠
+`# CONFIG_... is not set` 注释覆盖默认值。原 J21 配置仍默认开启流控。
+H4 初始化会先释放遗留的 UART0 引脚复用，再应用所选引脚，避免软件重启或
+下载后 PA26 与 PC2 同时保留 RX 功能而无法接收。
+
+树莓派 `/boot/firmware/config.txt` 添加 `dtoverlay=uart5`，删除此前测试的
+`dtoverlay=uart3,ctsrts`。UART5 就绪后安装服务：
+
+```sh
+sudo install -m 644 component/wifi/whc/nan_test/rpi/green2-hci-uart.service \
+  /etc/systemd/system/green2-hci-uart.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now green2-hci-uart
+sudo btmgmt info
+```
+
+服务运行 `btattach -B /dev/ttyAMA5 -P h4 -S 115200 -N`，其中 `-N` 关闭流控。
+控制器索引可能变化，应按 Realtek 厂商号 93 和 UART5 的 sysfs 路径识别，
+不要把树莓派内置的蓝牙控制器当作 Green2。若控制器被 rfkill 软件禁用，
+先用 `sudo rfkill list` 查出该控制器编号，再只解除它的屏蔽。
+
+2026-11-09 已完成两线配置的编译、COM33 烧录校验和 BlueZ 实测：Green2
+识别为 Realtek 93 / Bluetooth 5.4，12 秒 LE 扫描收到 911 条设备报告；
+Green2 的 `Green2-HCI-Test` 广播由树莓派内置蓝牙收到 6 次，测试后已移除
+临时广播。扫描结束时 HCI RX/TX 错误计数均为 0。测试期间 NAN 发布服务
+运行；本次没有验证 BLE 连接传输、休眠或 NAN 数据传输并发性能。
+
 编辑修复源码后，选择源码构建，或先重建打包库：
 
 ```sh
@@ -150,6 +199,56 @@ sudo install -m 644 /tmp/sdio-24mhz.dtbo /boot/firmware/overlays/
 ```ini
 dtoverlay=sdio,poll_once=on,bus_width=1,gpios_22_25
 dtoverlay=sdio-24mhz
+```
+
+要切换到 4-bit，Group1 还须接通 D2、D3：
+
+| 树莓派 GPIO（物理针） | Green2 Group1 |
+| --- | --- |
+| GPIO26（37） | D2 PA4 |
+| GPIO27（13） | D3 PA21 |
+
+先确认六根 SDIO 信号线均已接好。将上述 `sdio` 行改为
+`dtoverlay=sdio,poll_once=on,bus_width=4`，去掉 `gpios_22_25`，这样默认
+启用 GPIO22–27。保留 `sdio-24mhz` 便于只比较总线宽度。Group1 模组固件
+已配置 D0–D3，无需为此重编固件。停止服务、卸载 `whc_sdio` 后重启 Pi，
+核对 `sudo cat /sys/kernel/debug/mmc1/ios` 的 `bus width: 2 (4 bits)`，
+以及 `pinctrl get 22-27` 中 DAT0–DAT3 的复用。配置文件写成 4 并不等于
+运行时已成功切换；还须检查枚举、CRC/超时日志及实际数据传输。
+
+Pi 4B 的 `bcm2835-mmc` 使用偶数分频器。默认 250 MHz 输入下，仅设置
+`sdio_overclock=80` 得到的是 62.5 MHz，不能据配置值声称已达到 80 MHz。
+`sdio-80mhz-overlay.dts` 将外部 EMMC 输入设为 160 MHz，再以二分频输出
+80 MHz；2026-11-09 此配置实际触发 `Overclocking to 80000002Hz`，但
+Green2 在初始化时反复 `-110`，复位模组后仍失败，不能作为可用配置。
+该实验文件保留用于诊断，正式运行不要默认启用。
+
+`sdio-50mhz-overlay.dts` 使用独立的外部 EMMC 时钟 200 MHz / 4，目标为
+标准高速模式的 50 MHz。两份 overlay 都只改 `fe300000.mmc` 的时钟 28，
+不改根文件系统 SD 卡使用的 EMMC2；它们替换 `sdio-24mhz`，不能叠加。
+Realtek RTL8711F 数据手册 v0.2.2 §7.7.1 列出的无线带宽是 20 MHz，
+§7.15/§9.19 列出的 SDIO 高速上限是 50 MHz。Green2 的
+`autoconf_8721f.h` 同样设置 `CONFIG_BW_MODE=0x00`；共享结构中的
+`bw_40_enable` 字段及 Linux 驱动的通用 HT40 标志不能作为本芯片支持
+40 MHz 的证据。
+
+2026-11-09 改用 50 MHz 后，运行时确认为 4-bit / 50,000,001 Hz，网卡
+正常枚举。iPhone NDP TCP 每方向 10 秒、共 3 轮，接收端平均上传
+27.282 Mbps、下载 29.998 Mbps，双方字节数一致。未观察到 SDIO CRC 或
+超时错误；下载期间仍有 6 次 `TXBD unavailable, TX FAIL`。这只完成了
+短时负载验证。固件和双频设置沿用此前 5 GHz 测试，但 COM33 掉线导致
+本轮缺少新的 NDL 信道记录，不能把实际数据频道视为已再次核实。
+
+在 Pi 上编译安装 50 MHz overlay，并以它替换 `sdio-24mhz`：
+
+```sh
+dtc -@ -I dts -O dtb -o /tmp/sdio-50mhz.dtbo rpi/sdio-50mhz-overlay.dts
+sudo install -m 644 /tmp/sdio-50mhz.dtbo /boot/firmware/overlays/
+```
+
+```ini
+dtoverlay=sdio,poll_once=on,bus_width=4
+dtoverlay=sdio-50mhz
 ```
 
 在完整 SDK 源码目录编译驱动，`make prepare` 会复制必要的 SDK 头文件：
@@ -216,6 +315,74 @@ iPhone 打开 Flash Studio → NAN →「发现并配对 Green2」，选择设�
 PIN `123456`。已配对时保留授权，点击「搜索服务并连接」。发布服务名为
 `_flashstudio._tcp`，IPv6 TCP 端口 8000；应用发送 `NAN-PING\n`，服务返回
 `NAN-PONG\n`。echo 是最小测试端点，监听所有 IPv6 接口，不用于生产服务。
+
+### NDP TCP 吞吐量
+
+更新后的 `rpi/nan_echo.py` 同时提供旧版回包和 `NAN-THROUGHPUT/1` 双向
+吞吐协议，继续使用 `_flashstudio._tcp` / IPv6 TCP 8000。WHC 模组负责
+NDP 和无线收发，TCP 收发端点在 Linux 主机。iOS Flash Studio → NAN →
+「NDP 吞吐量」可选择每方向 10、20、60 秒，然后「开始双向测速」。
+自动启动参数为 `--nan --nan-throughput 10`；测试需要已有 Green2 授权。
+
+上传、下载顺序复用一条 TCP 连接。发包不插入延迟，写入使用背压，发送阶段
+结束后允许已排队数据排空。上传 Mbps 使用主机实际接收的字节和时间，下载
+Mbps 使用 iPhone 实际接收的字节和时间；双方必须确认相同测试 ID、方向和
+载荷字节数。发现/建链耗时另记，控制消息、帧头和无线协议开销不计入有效载荷。
+因此结果是该 NDP 链路上的 TCP 有效吞吐，不是 PHY 速率。
+
+协议（网络字节序）：
+
+1. 客户端发送 `NAN-THROUGHPUT/1 <test-id> UPLOAD|DOWNLOAD <seconds>\n`；
+   时长限 1–60 秒，服务端返回 `READY\n`。
+2. 数据帧为 4 字节无符号长度和对应载荷，默认 64 KiB，上限 256 KiB。
+   长度 0 表示本方向结束，不作为有效载荷计数。
+3. 上传由客户端发帧，下载由服务端发帧。服务端在本方向结束后发一行 JSON，
+   包含 `version/test_id/direction/bytes/seconds/mbps/counter`。
+   上传的 `counter=received`，下载的 `counter=submitted`，下载最终速率由
+   iPhone 的接收计时计算。每条控制消息最长 256 字节；异常/截断/超时只关闭
+   当前客户端，监听服务继续运行。
+
+App 可导出 `Documents/nan-throughput-<UUID>.json`，保留每方向双方字节数、
+发送与接收时间、Mbps、发现/ready 时间及失败/取消状态。退到后台或停止时，
+未完成的方向不记为成功。旧 `NAN-PING\n` 客户端仍保持一次请求后关闭的行为。
+回归入口：`python3 component/wifi/whc/tests/test_nan_echo.py`。
+
+5 GHz 对照需在模组构建时设置 `NAN_2G_ONLY=OFF`，解除此前的 2.4 GHz
+硬件限制。NAN 必须保留 2.4 GHz 支持，不能仅启用 5 GHz 发现；应开启双频，
+再核对每次 NDP 实际调度信道。保留 SDIO/H4 配置示例：
+
+```sh
+FIRMWARE_CONFIG="$PWD/component/wifi/whc/nan_test/module/green2_nan_sdio_bt_h4.config" \
+NAN_2G_ONLY=OFF \
+component/wifi/whc/nan_test/module/build-firmware.sh /tmp/green2-nan-5g
+```
+
+烧录新固件、重新枚举 SDIO、创建 `nan0` 后，用更新的服务脚本启动：
+
+```sh
+sudo /opt/green2-nan/prepare-radio.sh wlan0 dual
+sudo /opt/green2-nan/run-services.sh wlan0
+```
+
+先用 `iw reg get` 核对设备所在地的国家码。测试环境为 CN，使用
+`sudo iw reg set CN` 后同时核对 global 和 Green2 PHY 的规则；其他地区须
+使用对应国家码。默认 `00` 的 5 GHz `no IR` 会使 Linux 6.18 拒绝启动，
+报 `5 GHz band operation is not allowed`。
+
+切换前先停止服务组，保留两端配对缓存。只切换发现频段不构成数据频段
+证据；实测需核对运行时调度信道或空口记录，不能把“双频”直接标为 5 GHz。
+
+2026-11-09 实测：iPhone 13 Pro ↔ Green2 SDIO ↔ Pi 4B，1-bit / 实际
+20.83 MHz；每方向 10 秒、每组 3 轮，两端载荷计数全部一致。2.4 GHz
+平均上传/下载 5.94/11.62 Mbps；5 GHz NDL 频道 36/149、20 MHz，平均
+10.41/11.27 Mbps。5 GHz 组有两次 `TXBD unavailable`，TCP 测试仍完成；
+本次不代表长期稳定性或无线速率上限。详细报告在配套 Flash Studio 仓库的
+`NAN_VALIDATION.md` 和 `nan-test-results/20261109-throughput/`。
+
+同日改为 4-bit、保持实际时钟 20.83 MHz 后，5 GHz 三轮全部完成，平均
+上传/下载 **20.96/24.16 Mbps**。运行时确认 `bus width: 2 (4 bits)`，
+DAT0–DAT3 复用正确，未观察到 CRC 错误；仍记录两次 `TXBD unavailable`。
+报告位于配套 App 仓库的 `nan-test-results/20261109-throughput-4bit/`。
 
 运行状态保存于 `/run/green2-nan`，配对缓存位于 `/var/lib/nan`（权限 0700，
 NPK/NIK 文件 0600）。缓存只支持最新的单个 NPK；不要把密钥、原始 PASN 事件、
@@ -703,6 +870,7 @@ sudo python3 rpi/ble_client_smoke.py --adapter hci0 --rounds 10
 characteristic UUID `7b183224-9168-443e-a927-7aeea07e0002`，支持 read/write/notify。
 写入 `BLE-PING\n`，返回 `BLE-PONG\n` 通知。向 GATT server 进程发送
 `SIGUSR1` 可对已订阅客户端发送 `NAN-READY\n`，供后续唤醒流程接入。
+手动调试也接受不带换行的 `BLE-PING` 或 CRLF 结尾；回复保持 LF 结尾。
 本程序尚未接入 iOS AccessorySetupKit、CoreBluetooth 后台恢复或休眠控制，
 也没有对测试 GATT 特征强制配对加密。
 
@@ -716,6 +884,87 @@ characteristic UUID `7b183224-9168-443e-a927-7aeea07e0002`，支持 read/write/n
 
 - boot.bin：`b7dd3adeec09710f0cbfdaa2f854de6b4784290f57a227ae6125bb95094a3dab`
 - app.bin：`585fa20deaa4c20257896f0dae5aa05bb84629a8da70e20a65e4e3ae0c4a9f53`
+
+### 2026-11-09：WSL USB/IP 启动顺序
+
+Ubuntu 24.04 WSL2 使用 `6.6.87.2-microsoft-standard-WSL2`。从 Microsoft
+`WSL2-Linux-Kernel` 的 `linux-msft-wsl-6.6.87.2` tag、运行内核的
+`/proc/config.gz` 和 GCC 11 构建 `Module.symvers`，再编译本仓库 WHC USB
+驱动和上述 btusb 例外。模块安装到
+`/lib/modules/$(uname -r)/updates/green2/`；没有替换运行内核。
+
+新板 Wi-Fi MAC 为 `94:C9:60:59:06:FC`，USB HCI 地址为
+`94:C9:60:59:06:FD`。usbipd-win 5.3.0 将原生 USB `0bda:f851`、
+COM3 的 CH340 `1a86:7523` 和摄像头 `30c9:00a6` 分别直通。
+摄像头生成 `/dev/video0`，640×480 MJPEG、60 帧采集测试通过。
+BUSID 和 Linux 接口编号应每次重新确认，不能当作固定硬件身份。
+
+复合设备的 HCI 接口可能先于 WHC 完成 probe。旧固件收到第一个
+HCI Reset 时，串口显示 `WiFi is OFF! Please Restart BT after Wifi on!`，
+Linux 随后报告 `Opcode 0x0c03 failed: -110`。在 Wi-Fi 就绪后单独重新
+绑定 btusb，控制器即能完成初始化，证实启动顺序依赖。
+
+Green2 USB HCI 固件现按以下顺序启动：
+
+1. 创建 WHC 发送队列和 API 事件锁。
+2. 初始化 Wi-Fi；USB 尚未配置时释放待上报数据，不访问 USB 端点。
+3. 加载蓝牙控制器补丁并完成内部 HCI Reset，暂用内部 HCI 接收回调。
+4. 建立 USB 同步资源、BT 收发队列，再接入 HCI 转发回调并启动 USB。
+5. 主机请求 Wi-Fi-on 时补发早期未送达的 STA MAC 信息。
+
+Wi-Fi 或蓝牙初始化失败时不启动 USB，错误保留在下载串口。
+这仍需要主机的 btusb Flash Boot 补丁，不能使用 stock btrtl 下载路径。
+
+COM3 已确认 DTR 控制 BOOT、RTS 控制 EN；后续下载默认 1.5 Mbps。
+测试产物和逐轮记录位于本机 `/home/zxf/green2-wsl-test-20261109/`。
+
+WSL 的 CH340 USB/IP 串口在 1.5 Mbps 下出现长回读超时及写入帧校验错误；
+因此本轮暂时将该串口交回 Windows，以 1.5 Mbps、每页 SENSE 确认完成下载，
+boot/app 均校验 PASS，再将串口挂回 WSL。Windows 重装驱动后原 COM3
+变为 COM39；脚本按已核对的 USB InstanceId、VID/PID 识别，不硬编码新 COM 号。
+这不代表已验证 1.5 Mbps 经 USB/IP 烧录可靠；NAN/BLE 运行态 USB 仍直通 WSL。
+
+修正后的 EN 复位启动日志按顺序出现 `Wi-Fi ready before USB`、
+`BT controller ready before USB`、`[USBD-A] INIT`。第一次 USB attach 即完成
+HCI 初始化，btmon 中首个 Reset 在 15.325 ms 后收到 Success，无需重新绑定。
+WHC 也正确获得 STA MAC，NAN 接口为 `nan0`，发布名 `Green2 WSL`，
+服务 `_flashstudio._tcp`，测试 PIN `123456`，本轮 NAN 使用 2.4 GHz。
+
+13:08 的 iPhone 测试已完成 PIN/PASN、NDP 建链，用户确认连接并收到回复。
+同轮 WSL 接收上传 17,235,968 bytes / 10.171 s，即 **13.56 Mbps**。
+下载服务器提交 13,434,880 bytes / 10.162 s，即 **10.58 Mbps**；此数值为
+发送端提交计数，尚未读取 iPhone 的最终接收计数，不能当作接收端有效吞吐。
+BlueZ 的 `Green2 BLE` GATT 广播同时保持运行，BLE 空口收发另行核对。
+
+后续将本板 BLE 广播名设为 `Green2 WSL BLE`（`ble_gatt.py --name`），
+避免与其他 Green2 混淆。13:17:22，nRF Connect 写入不带换行的
+`BLE-PING`，服务日志记录 `BLE-PING received`、`notify bytes=9`；UART
+HCI ACL 同时确认 ATT Write Response 和 `BLE-PONG\n` Notification。
+早先缺少换行的写入曾被旧服务拒绝，未计入通过次数。
+
+保留 BLE 连接时，13:11:55 的 NAN 请求 `bytes=9 valid=True`，用户确认
+收到回复；该连接在 13:12:18 仍在线且能发送 `NAN-READY\n` 通知。
+这是基本功能及连接共存验证，未进行 100 次自动收发或长时间压测。
+Windows 自带 `2c7c:0130` 适配器报告不支持 BLE Central，本轮 BLE 对端
+使用 iPhone nRF Connect；没有修改 Windows 的蓝牙驱动或配对记录。
+
+当前运行服务为 `green2-wsl-nan.service` 和 `green2-wsl-ble-test.service`，
+由 `systemd-run` 启动。它们在本次 WSL 会话内持续运行；WSL 重启或 USB
+重新接入后需重新确认接口并启动，尚未部署自动启动服务。
+
+13:18 清理串口时，`stty -F /dev/ttyUSB0 -hupcl` 打开串口触发了控制线，
+导致板卡进入复位、原生 USB 断开。该次断开由维护操作触发，不能计为
+固件自行崩溃。随后显式释放 DTR/RTS、保留关闭 HUPCL 的设置，并重新
+挂载原生 USB；恢复启动日志再次确认 Wi-Fi、BT 就绪后才启动 USB。
+13:22 两项服务重新启动，核对到 `nan0` 为 UP、NAN 发布成功、TCP 8000
+监听、BlueZ 广播实例为 1；恢复后尚未另做手机端收发测试。串口记录
+进程已退出，避免继续占用下载口。此板打开串口前必须确认工具不会
+自动拉动 DTR/RTS，不能把普通串口属性查询视为无副作用的操作。
+
+本轮在板固件 SHA-256：
+
+- boot.bin：`f25111408ab301aca60445af8790a6a7649bef8100e797e878561c02f2255a22`
+- app.bin：`f0b1c3d5b27164cf8ff552df0294d375647d905f2d12eabd46265856b2d24127`
 
 ### VMware 内核串口与 panic 修复
 
@@ -830,3 +1079,76 @@ Windows iperf3 在测试交接时偶尔拒绝或重置控制连接。脚本只�
 结束时保留双频 2048 固件及对应主机驱动、AIoT 5 GHz 连接和 BLE 广播，
 停止临时 iperf 服务；NAN 发布仍暂停。本次结果是 STA 热点测速，
 不代表 NAN 吞吐或长期稳定性验证。
+
+### 2026-11-09：Green2 SDIO 经 MikroTik 的 STA TCP 测速
+
+树莓派 4B 的 Green2 使用 4-bit SDIO，运行时实际时钟 50,000,001 Hz。
+暂停 NAN 后，以 STA 连接 MikroTik hAP ax²（RouterOS 7.25）的 `wifi1`：
+频道 36 / 5180 MHz / 20 MHz，802.11ax 1x1，WPA2-PSK、MFP 开启。
+测试期间未改 AP 配置；AP 发射功率为 4 dBm，原有 3 台其他客户端。
+Green2 接收信号约 −59 至 −65 dBm，观测到最高 TX PHY 速率 114.7 Mbps。
+
+Pi 的 iperf3 3.18 同时用 `-B 192.168.2.181 --bind-dev wlan0` 绑定
+Green2，连接有线 Windows/WSL 主机上的 iperf3 3.16（192.168.2.69）。
+每项测 15 秒，另省略 3 秒预热；表中均为接收端有效 TCP 吞吐，上传指
+Green2 → 有线主机，下载反之。有线对照为 798.04 Mbps。流量经过
+MikroTik AP 桥接；未在 RouterOS CPU 上生成测速流量。
+
+| 条件 | 上传 Mbps | 下载 Mbps |
+| --- | ---: | ---: |
+| 省电开启，单流第 1 次 | 33.37 | 28.87 |
+| 省电开启，单流第 2 次 | 36.88 | 24.96 |
+| 省电开启，单流第 3 次 | 47.92 | 13.63 |
+| 省电开启，单流平均 | 39.39 | 22.49 |
+| 省电开启，4 流各 1 次 | 23.72 | 23.07 |
+| 省电关闭，单流各 1 次 | 32.98 | 29.92 |
+
+初次 TCP 建连超时一次，保留失败 JSON；连通性复查成功后，10 项正式
+测试均完成。正式测试期间没有观察到 SDIO CRC、超时或内核崩溃，但
+4 流上传期间出现 7 次 `TXBD unavailable, TX FAIL`；此前短时连通性
+复查另出现 2 次。Pi 未报告降频/欠压，测得温度约 48°C。
+
+下载存在明显波动，AP 发送 PHY 速率曾降至 17.2 Mbps。省电关闭对照
+每方向只有 1 个样本，且无线速率及共享 AP 的负载未固定，不能据此把
+波动全部归因于省电、SDIO 或某一个驱动环节；本表不是芯片峰值规格。
+
+原始 iperf JSON、AP/STA 链路状态、内核记录、测试脚本及汇总保存于本机
+`codex-debug/green2-sta-mikrotik-20261109/`。结束后恢复省电开启，删除
+临时 STA 连接及运行时口令，停止测试服务器，恢复原 NAN 发布/PASN/TCP
+服务，保留 4-bit / 50 MHz。配对缓存和 MikroTik 配置保持原状。
+
+### Green2 HCI iBeacon 广播与 1 米参考功率
+
+`rpi/ibeacon.py` 经 BlueZ 使用 UART5 的 Realtek `hci1`，默认广播
+UUID `7b183224-9168-443e-a927-7aeea07e1001`、Major/Minor 1、100 ms legacy
+非连接广播。`--duration` 控制时长，退出时删除本次广播，不覆盖其他广播。
+`--duration 0` 持续广播，直到 SIGTERM/SIGINT；仍会在退出时清理广播实例。
+树莓派已部署 `rpi/green2-ibeacon.service`，使用校准文件持续广播并开机自启，
+依赖 HCI UART 服务启动，进程失败后每 5 秒重试。管理命令：
+
+```sh
+sudo systemctl status green2-ibeacon.service
+sudo journalctl -u green2-ibeacon.service -n 20
+sudo systemctl stop green2-ibeacon.service       # 本次停止
+sudo systemctl disable --now green2-ibeacon.service  # 停止并取消开机自启
+sudo systemctl enable --now green2-ibeacon.service   # 持续开启并开机自启
+```
+
+做临时广播测试前先停止此服务，避免广播实例冲突；测试完成后可再启动。
+脚本会自动读取同目录 `ibeacon-calibration.json`；`--calibration PATH` 可指定
+文件，`--measured-power DBM` 为显式覆盖。无文件且未覆盖时仍使用未经校准的
+−59 dBm 占位值。校准文件必须匹配控制器地址、UUID、Major/Minor 和 1 米
+参考距离；不匹配时在添加广播之前报错。
+
+2026-11-09 在用户确认的约 1 米位置，用 iPhone 13 Pro 采集两段 RSSI，
+排除每段前 10 秒后共 31 个有效样本，均值 −43.52 dBm、标准差 2.00 dB。
+当前板卡参考功率取 −44 dBm，已保存于树莓派 `/home/axk/ibeacon-calibration.json`。
+该值只更新 iBeacon 广播中的 1 米接收信号参考，不调整射频发射功率。
+校准受环境和姿态影响，不能把距离估算视作精确定位。
+固定位置的独立复测 RSSI 又降至平均 −49.42 dBm，估算距离约 1.86～2.04 米；
+因此 −44 dBm 仅是本轮参考值，不能宣称已经验证精确的物理 1 米边界。
+
+Flash Studio 使用有效估算距离 ≤ 1 米触发后台实时活动提醒，同一区域停留只
+提醒一次，离开后重置。区域进入本身只启动测距。后台测距有时限，超过窗口
+才靠近可能要等下次测距才会提醒。原始采样和结果位于 iOS 仓库
+`nan-test-results/20261109-ibeacon-wake/`。

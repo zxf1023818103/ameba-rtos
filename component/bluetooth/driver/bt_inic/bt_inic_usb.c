@@ -3,6 +3,7 @@
 #include "osif.h"
 #include "bt_inic.h"
 #include "hci_if_inic.h"
+#include "hci_controller.h"
 #include "bt_debug.h"
 
 #define BT_INIC_USB_STATUS_ACTIVE                       0
@@ -310,6 +311,15 @@ void bt_inic_usb_acl_txdone_cb(u8 *buf)
 	osif_sem_give(usb_priv.acl_tx_done_sema);
 }
 
+#if defined(CONFIG_AMEBAGREEN2) && CONFIG_AMEBAGREEN2 && defined(CONFIG_WHC_INTF_USB) && CONFIG_WHC_INTF_USB
+int bt_inic_usb_prepare(void)
+{
+	/* Keep the standalone HCI receiver until USB queues/locks exist. The
+	 * controller patch download and reset must finish before USB enumeration. */
+	return (hci_controller_is_opened() || hci_controller_open()) ? HAL_OK : HAL_ERR_HW;
+}
+#endif
+
 int bt_inic_usb_init(void)
 {
 	int ret = HAL_OK;
@@ -326,6 +336,13 @@ int bt_inic_usb_init(void)
 	osif_sem_create(&usb_priv.acl_tx_done_sema, 0, 0xFFFFFFFF);
 	osif_sem_give(usb_priv.evt_tx_done_sema);
 	osif_sem_give(usb_priv.acl_tx_done_sema);
+#if defined(CONFIG_AMEBAGREEN2) && CONFIG_AMEBAGREEN2 && defined(CONFIG_WHC_INTF_USB) && CONFIG_WHC_INTF_USB
+	/* prepare() already opened the controller; now hand events to USB. */
+	if (!bt_inic_open()) {
+		bt_inic_usb_deinit();
+		return HAL_ERR_HW;
+	}
+#endif
 	BT_LOGA("USB device init done!\n");
 init_exit:
 	return ret;

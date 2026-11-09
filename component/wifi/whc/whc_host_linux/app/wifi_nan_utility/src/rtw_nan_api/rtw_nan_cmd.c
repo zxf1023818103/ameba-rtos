@@ -9,6 +9,7 @@
 #include "rtw_nan_cmd_api.h"
 #include "rtw_nan_cmd.h"
 #include "nan_event.h"
+#include "nan_cache_file.h"
 #include "rtw_nan_vendor_def.h"
 
 #define MAX_NANDOW_PARA_LEN 1514
@@ -465,7 +466,7 @@ RTW_RET_STATUS rtw_nan_api_clear_pairing_info()
 	struct nan_nik_cache_data nik_cache_data = {0};
 	const uint8_t zero_nik[16] = {0};
 	FILE *f = fopen("/var/lib/nan/nik_cache", "rb");
-	int fd, ok;
+	int ok;
 
 	/* Firmware restores own_nik verbatim. Clear peers without replacing the
 	 * local identity with an all-zero NIK, which breaks subsequent pairing.
@@ -489,14 +490,8 @@ RTW_RET_STATUS rtw_nan_api_clear_pairing_info()
 		return RTW_RET_STATUS_ERROR;
 	unlink("/var/lib/nan/pasn_npk");
 	mkdir("/var/lib/nan", 0700);
-	fd = open("/var/lib/nan/nik_cache", O_WRONLY | O_CREAT | O_TRUNC, 0600);
-	if (fd < 0)
-		return RTW_RET_STATUS_ERROR;
-	ok = fchmod(fd, 0600) == 0 &&
-	     write(fd, &nik_cache_data, sizeof(nik_cache_data)) ==
-	     sizeof(nik_cache_data) && fsync(fd) == 0;
-	if (close(fd) < 0)
-		ok = 0;
+	ok = !nan_cache_write_atomic("/var/lib/nan/nik_cache", &nik_cache_data,
+				     sizeof(nik_cache_data));
 	memset(&nik_cache_data, 0, sizeof(nik_cache_data));
 	if (!ok)
 		return RTW_RET_STATUS_ERROR;
@@ -715,7 +710,12 @@ uint16_t _append_gen_sub_attr(uint8_t attr_id, uint8_t *pbuf, void *pdata, uint8
 		*pbuf = NAN_GEN_SRVC_TRANSPORT_PROTOCOL;
 		attr_len = 1;
 		memcpy(pbuf + 1, &attr_len, 2);
-		*(pbuf + 3) = NAN_GEN_SRVC_PORT_PROTOCOL_TCP;
+		/* The advertised DNS-SD transport must match the NDP metadata.
+		 * Keep the ABI unchanged: the service pointer already carries it. */
+		const char *name = dp_info->service ? dp_info->service->service_name : NULL;
+		size_t name_len = name ? strlen(name) : 0;
+		*(pbuf + 3) = name_len >= 5 && !strcmp(name + name_len - 5, "._udp")
+		    ? NAN_GEN_SRVC_PORT_PROTOCOL_UDP : NAN_GEN_SRVC_PORT_PROTOCOL_TCP;
 		len = attr_len + 3;
 		break;
 	case NAN_GEN_SRVC_SERVICE_NAME:

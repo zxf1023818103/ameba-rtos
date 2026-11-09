@@ -1,0 +1,43 @@
+#!/bin/bash
+set -euo pipefail
+# USB ownership must be transferred by the operator; this never changes drivers
+# or takes a different adapter away from another application.
+base=
+while [[ -z $base ]]; do
+    matches=()
+    for net in /sys/class/net/*; do
+        node=$(readlink -f "$net/device")
+        [[ -f $node/idVendor && -f $node/idProduct ]] || continue
+        [[ $(cat "$node/idVendor") == 0bda && $(cat "$node/idProduct") == f851 ]] || continue
+        [[ $(cat "$net/address") != 00:00:00:00:00:00 ]] || continue
+        info=$(iw dev "${net##*/}" info 2>/dev/null) || continue
+        grep -q 'type managed' <<< "$info" || continue
+        matches+=("${net##*/}")
+    done
+    (( ${#matches[@]} <= 1 )) || { echo 'Multiple Green2 devices: refusing ambiguous selection'; exit 1; }
+    if (( ${#matches[@]} == 1 )); then base=${matches[0]}; else sleep 2; fi
+done
+phy=$(basename "$(readlink -f "/sys/class/net/$base/phy80211")")
+if [[ ! -e /sys/class/net/nan0 ]]; then
+    # Reuse an existing NAN netdev if udev renamed it.
+    nan=
+    for net in /sys/class/net/*; do
+        [[ $(basename "$(readlink -f "$net/phy80211")") == "$phy" ]] || continue
+        if iw dev "${net##*/}" info | grep -q 'type NAN'; then nan=${net##*/}; break; fi
+    done
+    if [[ -z $nan ]]; then
+        iw phy "$phy" interface add nan0 type __nan
+        udevadm settle
+        for net in /sys/class/net/*; do
+            [[ $(basename "$(readlink -f "$net/phy80211")") == "$phy" ]] || continue
+            if iw dev "${net##*/}" info | grep -q 'type NAN'; then nan=${net##*/}; break; fi
+        done
+    fi
+    [[ -n $nan ]] || { echo 'No NAN interface after creation'; exit 1; }
+    if [[ $nan != nan0 ]]; then
+        ip link set "$nan" down
+        ip link set "$nan" name nan0
+    fi
+fi
+"$SNAP/services/prepare-radio.sh" "$base" 2GHz
+exec "$SNAP/services/run-services.sh" "$base"

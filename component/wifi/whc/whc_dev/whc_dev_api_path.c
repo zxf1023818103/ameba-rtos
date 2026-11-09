@@ -476,12 +476,25 @@ void whc_event_wifi_on(u32 api_id, u32 *param_buf)
 {
 	int ret;
 	u8 mode = (u8)param_buf[0];
+#if defined(CONFIG_AMEBAGREEN2) && CONFIG_AMEBAGREEN2 && defined(CONFIG_WHC_INTF_USB) && CONFIG_WHC_INTF_USB && defined(CONFIG_BT_INIC_USB) && CONFIG_BT_INIC_USB
+	int already_running = wifi_is_running(STA_WLAN_INDEX);
+#endif
 
 #ifdef CONFIG_WHC_DEV_TCPIP_KEEPALIVE
 	whc_dev_api_set_host_state(WHC_HOST_READY);
 #endif
 
 	ret = wifi_on(mode);
+#if defined(CONFIG_AMEBAGREEN2) && CONFIG_AMEBAGREEN2 && defined(CONFIG_WHC_INTF_USB) && CONFIG_WHC_INTF_USB && defined(CONFIG_BT_INIC_USB) && CONFIG_BT_INIC_USB
+	/* The initial MAC event happened before USB enumeration. Re-send it
+	 * when the host is ready, including after a host driver rebind. */
+	if (ret == RTK_SUCCESS && already_running) {
+		struct rtw_mac mac;
+		if (wifi_get_mac_address(STA_WLAN_INDEX, &mac, 0) == RTK_SUCCESS) {
+			whc_dev_set_netif_info(STA_WLAN_INDEX, mac.octet);
+		}
+	}
+#endif
 	whc_send_api_ret_value(api_id, (u8 *)&ret, sizeof(ret));
 }
 
@@ -724,6 +737,11 @@ void whc_event_nan_start(u32 api_id, u32 *param_buf)
 	int ret = 0;
 	u8 master_pref = (u8)param_buf[0];
 	u8 band_support = (u8)param_buf[1];
+
+#ifdef GREEN2_NAN_STARTUP_TRACE
+	extern void green2_nan_startup_trace_install(void);
+	green2_nan_startup_trace_install();
+#endif
 
 	rtw_nan_start_api(master_pref, band_support, NAN_CMD_TYPE_NATIVE_IW);
 	whc_send_api_ret_value(api_id, (u8 *)&ret, sizeof(ret));

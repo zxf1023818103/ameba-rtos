@@ -30,8 +30,16 @@
 #define RTW_WHC_WIFI_EP6_BULK_OUT						0x06U
 #define RTW_WHC_WIFI_EP7_BULK_OUT						0x07U
 
+#if defined(CONFIG_AMEBAGREEN2) && defined(CONFIG_NAN)
+/* Video bursts and overlapping NDP teardown/setup need more in-flight
+ * requests. Keep the 1600-byte wire format; the firmware sizes its skb pool
+ * separately and applies congestion control before exhausting RX buffers. */
+#define RTW_USB_RXQ_NUM						64U
+#define RTW_USB_TXQ_NUM						128U
+#else
 #define RTW_USB_RXQ_NUM						0x0AU
 #define RTW_USB_TXQ_NUM						0x20U
+#endif
 
 
 static struct usb_device_id whc_usb_ids[] = {
@@ -259,6 +267,8 @@ static int whc_usb_host_probe(struct usb_interface *intf, const struct usb_devic
 	dev_info(priv->dev, "whc_usb_host_probe: vendor=0x%04x product=0x%04x\n", id_table->idVendor, id_table->idProduct);
 	dev_info(priv->dev, "USB bulk buffers: RX=%u TX-limit=%u bytes\n",
 			 WHC_USB_RX_MAX_BUF_SIZE, WHC_USB_TX_MAX_BUF_SIZE);
+	dev_info(priv->dev, "USB request pools: RX=%u TX=%u\n",
+			 RTW_USB_RXQ_NUM, RTW_USB_TXQ_NUM);
 
 	if (whc_usb_host_init(priv, intf) != true) {
 		dev_err(priv->dev, "%s: initialize usb Failed!\n", __FUNCTION__);

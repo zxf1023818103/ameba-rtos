@@ -152,16 +152,14 @@ void hci_platform_external_fw_log_pin(void);
 
 bool bt_inic_open(void)
 {
-	if (hci_controller_is_opened()) {
-		return true;
-	}
-
+	if (!hci_controller_is_opened()) {
 #if (defined(CONFIG_AMEBAGREEN2) && CONFIG_AMEBAGREEN2) && (defined(CONFIG_BT_RTL8851F_FW) && CONFIG_BT_RTL8851F_FW)
-	hci_platform_external_fw_log_pin();
+		hci_platform_external_fw_log_pin();
 #endif
 
-	if (!hci_controller_open()) {
-		return false;
+		if (!hci_controller_open()) {
+			return false;
+		}
 	}
 
 	/* HCI Transport Bridge to BT inic */

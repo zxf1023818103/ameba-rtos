@@ -58,6 +58,12 @@
 #define UART_IRQ_MASK   (RUART_BIT_ERBI | RUART_BIT_ELSI | RUART_BIT_ETOI)
 #define UART_POLLING_TX_MAX 16
 
+#if defined(CONFIG_AMEBAGREEN2) && !defined(CONFIG_BT_INIC_H4_FLOW_CONTROL)
+#define UART_FLOW_CONTROL DISABLE
+#else
+#define UART_FLOW_CONTROL ENABLE
+#endif
+
 /* Receiver states. */
 enum {
 	ST_IDLE = 0,    /* Waiting for packet type. */
@@ -243,6 +249,27 @@ end:
 #define _UART_FUNCID(__pin, __idx)      PINMUX_FUNCTION_UART##__idx##_##__pin
 #define UART_FUNCID(__pin, __idx)       _UART_FUNCID(__pin, __idx)
 #endif
+
+#if defined(CONFIG_AMEBAGREEN2)
+static void bt_inic_h4_release_old_pins(void)
+{
+	/* Warm reboot/download can retain the previous UART0 pin routes. A second
+	 * RX route can block reception on the new pin. H4 owns this UART, so release
+	 * its old routes before applying the configured pins; keep other peripherals.
+	 */
+	for (u8 pin = 0; pin < PIN_TOTAL_NUM; pin++) {
+		u32 function = Pinmux_ConfigGet(pin);
+		if (function == UART_FUNCID(TXD, UART_INDEX) ||
+			function == UART_FUNCID(RXD, UART_INDEX) ||
+			function == UART_FUNCID(CTS, UART_INDEX) ||
+			function == UART_FUNCID(RTS, UART_INDEX)) {
+			GPIO_Direction(pin, GPIO_Mode_IN);
+			Pinmux_Config(pin, PINMUX_FUNCTION_GPIO);
+		}
+	}
+}
+#endif
+
 void bt_inic_h4_init(void)
 {
 	if (h4_state == H4_RUNNING) {
@@ -259,6 +286,10 @@ void bt_inic_h4_init(void)
 	/* enable uart clock and function */
 	RCC_PeriphClockCmd(APBPeriph_UARTx[UART_INDEX], APBPeriph_UARTx_CLOCK[UART_INDEX], ENABLE);
 
+#if defined(CONFIG_AMEBAGREEN2)
+	bt_inic_h4_release_old_pins();
+#endif
+
 #if defined(CONFIG_AMEBASMART)
 	/* Configure UART TX and RX pin */
 	Pinmux_Config(UART_TX, PINMUX_FUNCTION_UART);
@@ -269,18 +300,20 @@ void bt_inic_h4_init(void)
 	/* Configure UART TX and RX pin */
 	Pinmux_Config(UART_TX, UART_FUNCID(TXD, UART_INDEX));
 	Pinmux_Config(UART_RX, UART_FUNCID(RXD, UART_INDEX));
+#if !defined(CONFIG_AMEBAGREEN2) || defined(CONFIG_BT_INIC_H4_FLOW_CONTROL)
 	Pinmux_Config(UART_CTS, UART_FUNCID(CTS, UART_INDEX));
 	Pinmux_Config(UART_RTS, UART_FUNCID(RTS, UART_INDEX));
+#endif
 #endif
 
 	PAD_PullCtrl(UART_TX, GPIO_PuPd_UP); /* pull up Tx/Rx pin */
 	PAD_PullCtrl(UART_RX, GPIO_PuPd_UP); /* pull up Tx/Rx pin */
-#if defined(CONFIG_AMEBAGREEN2)
+#if defined(CONFIG_AMEBAGREEN2) && defined(CONFIG_BT_INIC_H4_FLOW_CONTROL)
 	PAD_PullCtrl(UART_CTS, GPIO_PuPd_UP); /* Do not transmit with disconnected host CTS. */
 #endif
 
 	/* Enable UART
-	 * Use Flow Control (When rx FIFO reaches level, RTS will be pulled high)
+	 * With flow control, RTS is raised when the RX FIFO reaches its threshold.
 	 * Use Baudrate 115200 (Default)
 	 */
 	UART_StructInit(&UART_InitStruct);
@@ -290,7 +323,7 @@ void bt_inic_h4_init(void)
 #else
 	UART_InitStruct.RxFifoTrigLevel = UART_RX_FIFOTRIG_LEVEL_HALF;
 #endif
-	UART_InitStruct.FlowControl = ENABLE;
+	UART_InitStruct.FlowControl = UART_FLOW_CONTROL;
 	UART_Init(UART_DEV, &UART_InitStruct);
 	UART_SetBaud(UART_DEV, 115200);
 	UART_TXDMAConfig(UART_DEV, 8);
@@ -305,11 +338,17 @@ void bt_inic_h4_init(void)
 	/* Enable Uart High Rate Rx Path */
 	UART_RxCmd(UART_DEV, ENABLE);
 #if defined(CONFIG_AMEBAGREEN2)
+#if defined(CONFIG_BT_INIC_H4_FLOW_CONTROL)
 	BT_LOGA("BT H4 UART%d 115200 8N1 RTS/CTS: TX=P%c%u RX=P%c%u CTS=P%c%u RTS=P%c%u\r\n",
 			UART_INDEX, 'A' + PORT_NUM(UART_TX), PIN_NUM(UART_TX),
 			'A' + PORT_NUM(UART_RX), PIN_NUM(UART_RX),
 			'A' + PORT_NUM(UART_CTS), PIN_NUM(UART_CTS),
 			'A' + PORT_NUM(UART_RTS), PIN_NUM(UART_RTS));
+#else
+	BT_LOGA("BT H4 UART%d 115200 8N1 no flow control: TX=P%c%u RX=P%c%u\r\n",
+			UART_INDEX, 'A' + PORT_NUM(UART_TX), PIN_NUM(UART_TX),
+			'A' + PORT_NUM(UART_RX), PIN_NUM(UART_RX));
+#endif
 #endif
 	BT_LOGA("BT UART Init OK!\r\n");
 }

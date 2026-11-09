@@ -1,0 +1,23 @@
+/dts-v1/;
+/plugin/;
+
+/* Pi 4B external SDIO, standard 50 MHz high-speed operation.
+ * Clock 28 is BCM2835_CLOCK_EMMC, not the root SD card's EMMC2 clock.
+ * A 200 MHz input permits 50 MHz with the host's even divider.
+ */
+/ {
+    compatible = "brcm,bcm2711";
+
+    fragment@0 {
+        target-path = "/soc/mmc@7e300000";
+        __overlay__ {
+            assigned-clocks = <&clocks 28>;
+            assigned-clock-rates = <200000000>;
+            max-frequency = <50000000>;
+            /* Allow PLL rounding (e.g. 200000004 / 4 = 50000001 Hz).
+             * With zero, the strict <= 50000000 check picks /6 instead.
+             */
+            brcm,overclock-50 = <50>;
+        };
+    };
+};

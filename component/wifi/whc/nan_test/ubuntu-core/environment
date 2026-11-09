@@ -1,0 +1,11 @@
+#!/bin/bash
+set -euo pipefail
+export PATH="$SNAP/usr/sbin:$SNAP/usr/bin:$SNAP/sbin:$SNAP/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export LD_LIBRARY_PATH="$SNAP/services:$SNAP/usr/lib/x86_64-linux-gnu:$SNAP/lib/x86_64-linux-gnu:$SNAP/usr/lib/x86_64-linux-gnu/pulseaudio${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export PYTHONHOME="$SNAP/usr"
+export PYTHONPATH="$SNAP/usr/lib/python3/dist-packages"
+export GI_TYPELIB_PATH="$SNAP/usr/lib/x86_64-linux-gnu/girepository-1.0"
+export PYTHONUNBUFFERED=1
+umask 077
+mkdir -p "$SNAP_COMMON/nan" "$SNAP_COMMON/run"
+exec "$@"

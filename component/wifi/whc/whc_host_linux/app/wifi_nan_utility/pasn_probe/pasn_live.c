@@ -125,6 +125,7 @@ static int prepare_verification(struct bridge *b, const u8 *frame,
 	size_t pos = 30;
 	FILE *fp;
 	int i, match = -1, ret = -1;
+	const char *failure = "malformed verification frame";
 
 	if (!path || !*path || frame_len < pos)
 		goto done;
@@ -157,10 +158,12 @@ static int prepare_verification(struct bridge *b, const u8 *frame,
 	if (!nonce || !tag || rsn.num_pmkid != 1 || !rsn.pmkid ||
 	    memcmp(rsn.pmkid, nonce, 8) || memcmp(rsn.pmkid + 8, tag, 8))
 		goto done;
+	failure = "NIK snapshot unavailable";
 	fp = fopen(NIK_CACHE_FILE, "rb");
 	if (!fp) goto done;
 	i = fread(&cache, 1, sizeof(cache), fp) == sizeof(cache);
 	fclose(fp);
+	failure = "NIK snapshot incomplete or invalid";
 	if (!i || cache.version != 1) goto done;
 	memcpy(message, "NIR", 3);
 	memcpy(message + 3, b->peer, 6);
@@ -173,12 +176,16 @@ static int prepare_verification(struct bridge *b, const u8 *frame,
 			break;
 		}
 	}
+	failure = "NIRA does not match cached identity";
 	if (match < 0) goto done;
+	failure = "NPK snapshot unavailable";
 	fp = fopen(path, "rb");
 	if (!fp) goto done;
 	i = fread(record, 1, sizeof(record), fp) == sizeof(record);
 	fclose(fp);
+	failure = "NPK snapshot incomplete or invalid";
 	if (!i || memcmp(record, "NPK1", 4)) goto done;
+	failure = "PMKSA insertion failed";
 	if (pasn_responder_pmksa_cache_add(b->pmksa, b->own, b->peer,
 				    record + 4, 32, rsn.pmkid,
 				    WPA_KEY_MGMT_SAE))
@@ -192,6 +199,7 @@ static int prepare_verification(struct bridge *b, const u8 *frame,
 	fflush(stdout);
 	ret = 0;
 done:
+	if (ret) fprintf(stderr, "Verification rejected: %s\n", failure);
 	forced_memzero(&cache, sizeof(cache));
 	forced_memzero(record, sizeof(record));
 	forced_memzero(digest, sizeof(digest));

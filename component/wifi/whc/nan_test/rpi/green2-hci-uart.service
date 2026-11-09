@@ -1,0 +1,18 @@
+[Unit]
+Description=Green2 H4 Bluetooth controller on Raspberry Pi UART5
+BindsTo=dev-ttyAMA5.device
+After=dev-ttyAMA5.device bluetooth.service
+Wants=bluetooth.service
+
+[Service]
+Type=simple
+# The Green2 firmware initializes its BT controller and downloads its patch.
+# J11 pins 32/33 use two-wire H4; match the firmware's no-flow-control profile.
+ExecStart=/usr/bin/btattach -B /dev/ttyAMA5 -P h4 -S 115200 -N
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=5
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

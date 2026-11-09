@@ -1,0 +1,32 @@
+#!/bin/bash
+set -euo pipefail
+while true; do
+    adapter=$(python3 - <<'PY'
+from pathlib import Path
+import dbus
+matches = []
+for hci in Path('/sys/class/bluetooth').glob('hci*'):
+    dev = (hci / 'device').resolve()
+    for p in dev.parents:
+        try:
+            if (p / 'idVendor').read_text().strip() == '0bda' and (p / 'idProduct').read_text().strip() == 'f851':
+                matches.append(hci.name)
+                break
+        except FileNotFoundError:
+            pass
+if len(matches) > 1:
+    raise SystemExit('Multiple Green2 Bluetooth adapters')
+if matches:
+    try:
+        objects = dbus.Interface(dbus.SystemBus().get_object('org.bluez', '/'),
+                                 'org.freedesktop.DBus.ObjectManager').GetManagedObjects()
+        if '/org/bluez/' + matches[0] in objects:
+            print(matches[0])
+    except dbus.DBusException:
+        pass
+PY
+)
+    [[ -z $adapter ]] || break
+    sleep 2
+done
+exec python3 "$SNAP/services/ble_gatt.py" --adapter "$adapter" --name 'Green2 Core26 BLE'

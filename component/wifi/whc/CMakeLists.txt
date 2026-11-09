@@ -139,6 +139,45 @@ endif()
 # Component private part, user config begin
 set(target_name)
 
+option(AMEBA_GREEN2_NAN_STARTUP_TRACE "Metadata-only Green2 NAN startup diagnostics" OFF)
+option(AMEBA_GREEN2_NAN_AUTH_PEER_FIX "Experimental Auth1-before-Subscribe peer initialization" OFF)
+option(AMEBA_GREEN2_NAN_USB_RX_RESERVE "Reserve receive buffers during NAN USB video congestion" OFF)
+option(AMEBA_GREEN2_NAN_STALE_TX_FIX "Flush data TX on final NDP teardown and reject stale NDI traffic" OFF)
+option(AMEBA_GREEN2_NAN_RESTART_FIX "Restore native discovery scheduling after a new NAN start" OFF)
+if(AMEBA_GREEN2_NAN_RESTART_FIX)
+    if(NOT green2_nan_cipher_fix_active OR NOT AMEBA_GREEN2_NAN_STALE_TX_FIX)
+        message(FATAL_ERROR "NAN restart fix requires the hash-pinned library and stale TX lifecycle guard")
+    endif()
+    list(APPEND private_sources whc_dev/whc_dev_nan_restart_fix.c)
+    list(APPEND private_definitions GREEN2_NAN_RESTART_FIX=1)
+endif()
+if(AMEBA_GREEN2_NAN_STALE_TX_FIX)
+    if(NOT green2_nan_cipher_fix_active)
+        message(FATAL_ERROR "NAN stale TX fix requires the hash-pinned Green2 NAN library")
+    endif()
+    list(APPEND private_definitions GREEN2_NAN_STALE_TX_FIX=1)
+    list(APPEND private_sources whc_dev/whc_dev_nan_stale_tx_fix.c)
+endif()
+if(AMEBA_GREEN2_NAN_USB_RX_RESERVE)
+    if(NOT green2_nan_cipher_fix_active OR NOT CONFIG_WHC_INTF_USB)
+        message(FATAL_ERROR "NAN USB reserve requires the verified Green2 USB NAN build")
+    endif()
+    list(APPEND private_definitions GREEN2_NAN_USB_RX_RESERVE=1)
+endif()
+if(AMEBA_GREEN2_NAN_AUTH_PEER_FIX)
+    if(NOT AMEBA_GREEN2_NAN_STARTUP_TRACE)
+        message(FATAL_ERROR "Experimental Auth1 peer fix requires startup diagnostics")
+    endif()
+    list(APPEND private_definitions GREEN2_NAN_AUTH_PEER_FIX=1)
+endif()
+if(AMEBA_GREEN2_NAN_STARTUP_TRACE)
+    if(NOT green2_nan_cipher_fix_active)
+        message(FATAL_ERROR "NAN startup trace requires the hash-pinned Green2 NAN library")
+    endif()
+    list(APPEND private_sources whc_dev/whc_dev_nan_startup_trace.c)
+    list(APPEND private_definitions GREEN2_NAN_STARTUP_TRACE=1)
+endif()
+
 if(CONFIG_WHC_DEV AND NOT CONFIG_WHC_INTF_IPC)
     ameba_list_append(private_sources
         whc_dev/whc_dev_init.c
@@ -381,6 +420,19 @@ if(private_sources)
             p_COMPILE_OPTIONS
                 ${private_compile_options}
         )
+        if(AMEBA_GREEN2_NAN_STARTUP_TRACE)
+            target_link_options(${c_CURRENT_TARGET_NAME} INTERFACE
+                "-Wl,--wrap=wifi_hal_normal_rx_process"
+                "-Wl,--wrap=rtw_recv_entry")
+        endif()
+        if(AMEBA_GREEN2_NAN_STALE_TX_FIX)
+            target_link_options(${c_CURRENT_TARGET_NAME} INTERFACE
+                "-Wl,--wrap=rtw_nan_ndi_sec_stainfo_free"
+                "-Wl,--wrap=rtw_nan_pairwise_key_set"
+                "-Wl,--wrap=wifi_hal_nan_macid_pause"
+                "-Wl,--wrap=rtw_nan_start_api"
+                "-Wl,--wrap=rtw_nan_stop_api")
+        endif()
         if(green2_nan_cipher_fix_active)
             target_link_options(${c_CURRENT_TARGET_NAME} INTERFACE
                 "-Wl,--wrap=rtw_nan_ndp_response_prehandle"

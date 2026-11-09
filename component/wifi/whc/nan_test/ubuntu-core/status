@@ -1,0 +1,16 @@
+#!/bin/bash
+set -euo pipefail
+uname -r
+iw dev
+python3 - <<'PY'
+import dbus
+bus = dbus.SystemBus()
+objects = dbus.Interface(bus.get_object('org.bluez', '/'),
+                         'org.freedesktop.DBus.ObjectManager').GetManagedObjects()
+for path, interfaces in objects.items():
+    if 'org.bluez.Adapter1' in interfaces:
+        adapter = interfaces['org.bluez.Adapter1']
+        adv = interfaces.get('org.bluez.LEAdvertisingManager1', {})
+        print(path, adapter['Address'], 'powered=', bool(adapter['Powered']),
+              'advertisements=', int(adv.get('ActiveInstances', 0)))
+PY
