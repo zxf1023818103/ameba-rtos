@@ -1,0 +1,44 @@
+{
+  "firmware": "d2f2f0c37f8dc74e751dbc2550613ae0c21c74f4c897a99138762b058d788964",
+  "snap": "20261110.14",
+  "nan_band": "dual",
+  "country": "CN",
+  "cases": [
+    {
+      "name": "uart-reset-no-srt",
+      "passed": true,
+      "interruption_seconds": 7.134,
+      "ssh_confirmed_seconds": 20.267,
+      "before_boot_id": "4abce66d-bfd2-48e0-9d30-ff1ba15fcf88",
+      "after_boot_id": "4abce66d-bfd2-48e0-9d30-ff1ba15fcf88",
+      "video_progress": [
+        [
+          3503458,
+          38
+        ],
+        [
+          9686571,
+          126
+        ]
+      ]
+    },
+    {
+      "name": "vm-normal-reboot-no-srt",
+      "passed": true,
+      "interruption_seconds": 31.47,
+      "ssh_confirmed_seconds": 80.129,
+      "before_boot_id": "4abce66d-bfd2-48e0-9d30-ff1ba15fcf88",
+      "after_boot_id": "c1109de3-d623-4ad6-991a-fdce9b605993",
+      "video_progress": [
+        [
+          64957823,
+          820
+        ],
+        [
+          72861691,
+          919
+        ]
+      ]
+    }
+  ]
+}

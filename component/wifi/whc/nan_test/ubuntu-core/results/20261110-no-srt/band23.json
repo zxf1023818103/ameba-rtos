@@ -1,0 +1,123 @@
+{
+  "interface": "NANDOW secondary master channel; not an NDP channel override",
+  "country": "CN",
+  "original_channel": 149,
+  "attempts": [
+    {
+      "requested": 52,
+      "readback": 149,
+      "accepted": false
+    },
+    {
+      "requested": 56,
+      "readback": 149,
+      "accepted": false
+    },
+    {
+      "requested": 60,
+      "readback": 149,
+      "accepted": false
+    },
+    {
+      "requested": 64,
+      "readback": 149,
+      "accepted": false
+    },
+    {
+      "requested": 100,
+      "readback": 149,
+      "accepted": false
+    },
+    {
+      "requested": 104,
+      "readback": 149,
+      "accepted": false
+    },
+    {
+      "requested": 108,
+      "readback": 149,
+      "accepted": false
+    },
+    {
+      "requested": 112,
+      "readback": 149,
+      "accepted": false
+    },
+    {
+      "requested": 116,
+      "readback": 149,
+      "accepted": false
+    },
+    {
+      "requested": 120,
+      "readback": 149,
+      "accepted": false
+    },
+    {
+      "requested": 124,
+      "readback": 149,
+      "accepted": false
+    },
+    {
+      "requested": 128,
+      "readback": 149,
+      "accepted": false
+    },
+    {
+      "requested": 132,
+      "readback": 149,
+      "accepted": false
+    },
+    {
+      "requested": 136,
+      "readback": 149,
+      "accepted": false
+    },
+    {
+      "requested": 140,
+      "readback": 149,
+      "accepted": false
+    },
+    {
+      "requested": 144,
+      "readback": 149,
+      "accepted": false
+    }
+  ],
+  "band2_firmware_message": "fail to set channel[...] because of SCAN_PASSIVE",
+  "band3_kernel_status": "disabled",
+  "ndp_throughput_performed": false,
+  "ap52_followup": {
+    "ap_channel": 52,
+    "ap_width": "20/40MHz",
+    "dfs_cac_completed": true,
+    "ap_2g_temporarily_disabled": true,
+    "app_report": "ap52-ndp-check-1.json",
+    "discovery_seconds": 0.4508712083334103,
+    "ndp_result": "Four NDP setup failures; no TCP transfer",
+    "ndp_requested_schedule_channels": [
+      149
+    ],
+    "ndp_channel_52_observed": false,
+    "caveat": "NDP failure after AP channel change does not prove a general DFS data-channel limitation",
+    "ap_restored_channel": 36,
+    "ap_2g_restored": true,
+    "restoration": {
+      "first_ap36_test": "restored-ap36-1.json",
+      "first_ap36_result": "Service found in 0.411 seconds, NDP failed; no TCP transfer",
+      "action": "Restart NAN service, preserve pairing; relaunch App in video mode",
+      "video_first_frame_seconds": 4.653,
+      "video_app_pid": 56879,
+      "video_verified": "bytes and displayed frames increased; no hardware or VM reboot required",
+      "cause": "NDP failure after AP channel changes is unresolved; service restart recovered video",
+      "tcp_after_restart": {
+        "report": "restored-ap36-after-service-restart-1.json",
+        "finished": true,
+        "mbps": [
+          18.489877861235055,
+          27.504186557105015
+        ]
+      }
+    }
+  }
+}

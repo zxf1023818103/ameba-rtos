@@ -12,26 +12,14 @@ static volatile u8 whc_usb_should_configure;
 static volatile u32 whc_usb_generation;
 
 #ifdef GREEN2_NAN_USB_RX_RESERVE
-#include "whc_dev_nan_usb_control.h"
 /* The USB OUT buffers and Wi-Fi RX/TX share skbpriv. A stalled NAN TX queue
  * must not consume the last RX buffers or hold all three USB OUT endpoints:
  * both PASN reception and host control replies would then be starved.
+ * Only actual buffer exhaustion uses this fallback. Ethernet payloads are
+ * opaque here; admission does not depend on transport, ports or SRT flags.
  */
 static u32 nan_usb_congestion_drops;
 static u32 nan_usb_drop_log_ms;
-
-static int whc_usb_nan_control(const struct whc_msg_info *msg, u32 length)
-{
-	u32 offset = sizeof(*msg);
-	if (length < offset || msg->pad_len > length - offset) {
-		return 0;
-	}
-	offset += msg->pad_len;
-	if (msg->data_len > length - offset) {
-		return 0;
-	}
-	return green2_nan_usb_control_frame((const u8 *)msg + offset, msg->data_len);
-}
 
 static void whc_usb_nan_record_drop(void)
 {
@@ -40,7 +28,7 @@ static void whc_usb_nan_record_drop(void)
 	if ((u32)(now - nan_usb_drop_log_ms) >= 1000) {
 		nan_usb_drop_log_ms = now;
 		/* The USB IRQ task has a small stack: avoid newlib printf here. */
-		RTK_LOGS(NOTAG, RTK_LOG_INFO, "[NANUSB] congestion drops=%u skb_free=%d\n",
+		RTK_LOGS(NOTAG, RTK_LOG_INFO, "[NANUSB] exhausted-buffer drops=%u skb_free=%d\n",
 				 nan_usb_congestion_drops,
 				 skbpriv.skb_buff_num - skbpriv.skb_buff_used);
 	}
@@ -368,23 +356,13 @@ static void whc_usb_dev_irq_task(void)
 				new_skb = skb_rcv;  // not need to malloc new skb
 			} else {
 				msg_info = (struct whc_msg_info *)skb_rcv->data;
-#ifdef GREEN2_NAN_USB_RX_RESERVE
-				/* Reserve RX headroom even for short JPEG DATA fragments;
-				 * only identified control traffic may use this headroom. */
-				if (msg_info->wlan_idx == NAN_WLAN_INDEX &&
-					(skbpriv.skb_buff_num - skbpriv.skb_buff_used) < 16 &&
-					!whc_usb_nan_control(msg_info, len)) {
-					/* No skb offsets have changed yet. Reuse this OUT buffer;
-					 * dropping one data packet keeps control/RX progressing. */
-					whc_usb_nan_record_drop();
-					new_skb = skb_rcv;
-					goto rearm_rx;
-				}
-#endif
 				if (((skbpriv.skb_buff_num - skbpriv.skb_buff_used) < 2) ||
 					((new_skb = dev_alloc_skb(USB_BUFSZ, USB_SKB_RSVD_LEN)) == NULL)) {
 #ifdef GREEN2_NAN_USB_RX_RESERVE
 					if (msg_info->wlan_idx == NAN_WLAN_INDEX) {
+						/* Keep OUT endpoints available for WHC commands if no
+						 * replacement skb can be obtained. All NAN data uses
+						 * this same exhaustion policy, without inspecting it. */
 						whc_usb_nan_record_drop();
 						new_skb = skb_rcv;
 						goto rearm_rx;

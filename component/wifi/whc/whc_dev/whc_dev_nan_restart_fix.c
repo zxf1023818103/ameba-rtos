@@ -14,6 +14,21 @@ extern uint8_t *g_nanctrl;
 extern void rtw_nan_dw_timer_reset(uint8_t enable);
 extern uint32_t rtw_nan_event_enqueue(uint32_t event, const void *data, uint32_t len);
 
+void green2_nan_reset_discovery_controller(void)
+{
+    /* intfs_deinit has stopped NAN, deleted the warmup/DW timers and drained
+     * the interface. intfs_init clears g_nanpriv and the scheduler, but keeps
+     * this 1784-byte controller allocation. Reusing its cached schedule after
+     * a host reboot can leave TWT1 at the warmup sentinel indefinitely.
+     * Match the zeroed allocation used by the first rtw_nan_init; never clear
+     * a live controller or its timers. Size is from the pinned archive.
+     */
+    if (g_nanctrl && g_nanpriv && !(g_nanpriv[2350] & 3)) {
+        memset(g_nanctrl, 0, 1784);
+        RTK_LOGS(NOTAG, RTK_LOG_INFO, "[NANSTART] retired discovery controller reset\n");
+    }
+}
+
 void green2_nan_arm_discovery_timer(void)
 {
     if (g_nanpriv && (g_nanpriv[2350] & 3) == 3) {

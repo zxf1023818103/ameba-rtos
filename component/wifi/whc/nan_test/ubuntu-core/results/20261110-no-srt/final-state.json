@@ -1,0 +1,27 @@
+{
+  "checked_at": "2026-11-10T11:13:01.281311+08:00",
+  "router_5g_channel": 36,
+  "router_2g_channel": 13,
+  "router_both_running": true,
+  "nan_band": "dual",
+  "nan_country": "CN",
+  "usb_speed_mbps": 480,
+  "services_active": [
+    "nan",
+    "ble",
+    "camera"
+  ],
+  "app_video_first_frame_seconds": 2.576,
+  "video_last_two_samples": [
+    {
+      "bytes": 52627175,
+      "displayed": 614
+    },
+    {
+      "bytes": 60817556,
+      "displayed": 704
+    }
+  ],
+  "serial_capture_stopped": true,
+  "kernel_fault_patterns_observed": false
+}

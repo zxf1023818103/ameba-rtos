@@ -724,6 +724,10 @@ void whc_event_nan_init(u32 api_id, u32 *param_buf)
 	 * timers and interface are still live. Retire that session first; native
 	 * deinit is a no-op when the interface has not been initialized. */
 	rtw_nan_intfs_deinit();
+#ifdef GREEN2_NAN_RESTART_FIX
+	extern void green2_nan_reset_discovery_controller(void);
+	green2_nan_reset_discovery_controller();
+#endif
 	rtw_nan_intfs_init();
 	whc_send_api_ret_value(api_id, (u8 *)&ret, sizeof(ret));
 }

@@ -53,6 +53,7 @@ c++ -std=c++17 -O2 -Wall -Wextra -Werror "$source_dir/camera-srt.cpp" \
 cp -a services/. app-tree/services/
 cp /repo/component/wifi/whc/nan_test/rpi/ble_gatt.py app-tree/services/
 cp "$source_dir/snap.yaml" app-tree/meta/snap.yaml
+install -D -m 755 "$source_dir/configure" app-tree/meta/hooks/configure
 for script in environment run-nan run-ble run-camera status; do
     install -m755 "$source_dir/$script" "app-tree/bin/$script"
 done

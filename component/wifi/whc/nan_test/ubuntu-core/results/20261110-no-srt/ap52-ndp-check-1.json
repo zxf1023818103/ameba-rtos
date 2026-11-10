@@ -1,0 +1,14 @@
+{
+  "blockBytes": 65536,
+  "cancelled": false,
+  "device": "Green2",
+  "discoverySeconds": 0.4508712083334103,
+  "error": "\u541e\u5410\u6d4b\u8bd5\u8d85\u65f6\uff1b\u8bf7\u68c0\u67e5\u4e3b\u673a\u670d\u52a1\u548c NDP \u94fe\u8def\u3002",
+  "finished": false,
+  "requestedSecondsPerDirection": 10,
+  "results": [],
+  "startedAt": "2026-11-10T03:03:03Z",
+  "testID": "ECD0390F-C568-46A1-9CD1-1DFAD180F7E1",
+  "transport": "Wi-Fi Aware TCP / bulk",
+  "version": 1
+}

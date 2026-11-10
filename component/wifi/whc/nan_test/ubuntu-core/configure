@@ -1,0 +1,11 @@
+#!/bin/bash
+set -euo pipefail
+band=$(snapctl get nan-band)
+country=$(snapctl get nan-country)
+case "${band:-2GHz}" in
+    2GHz|dual) ;;
+    *) echo 'nan-band must be 2GHz or dual' >&2; exit 2 ;;
+esac
+[[ -z $country || $country =~ ^[A-Z]{2}$ || $country == 00 ]] || {
+    echo 'nan-country must be a two-letter country code or 00' >&2; exit 2;
+}

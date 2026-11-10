@@ -1,0 +1,42 @@
+{
+  "firmware_before": "8fab3b814a5dd4266cd1964a3b9c21c7a873fdc392ce1f97a01f83d6379547ca",
+  "firmware_after": "d2f2f0c37f8dc74e751dbc2550613ae0c21c74f4c897a99138762b058d788964",
+  "unit": "Mbps, TCP application payload at receiver",
+  "kernel": "7.0.0-38.38r1-green2.6",
+  "usb_speed_mbps": 480,
+  "groups": {
+    "baseline-2g": {
+      "n": 3,
+      "country": "00",
+      "ndp_channels": [
+        6
+      ],
+      "upload_mean": 11.799732240469105,
+      "download_mean": 18.885424570327284
+    },
+    "no-srt-2g": {
+      "n": 3,
+      "country": "00",
+      "ndp_channels": [
+        6
+      ],
+      "upload_mean": 13.407389529013136,
+      "download_mean": 23.194661397272633
+    },
+    "no-srt-dual": {
+      "n": 3,
+      "country": "CN",
+      "ndp_channels": [
+        36,
+        149
+      ],
+      "upload_mean": 21.450400987530337,
+      "download_mean": 28.308845617812658
+    }
+  },
+  "limitations": [
+    "Sequential three-run samples, not a controlled RF isolation test.",
+    "Dual-band run also changes country 00 to CN.",
+    "Prior user-reported 40–50 Mbps not reproduced; full regression cause remains unresolved."
+  ]
+}

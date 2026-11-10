@@ -36,6 +36,7 @@ userdata = {
     }],
     'runcmd': [
         ['snap', 'connect', 'green2-nan-ble:bluez', 'bluez:service'],
+        ['snap', 'connect', 'green2-nan-ble:network-observe'],
         ['snap', 'connect', 'bluez:network-control'],
         ['snap', 'stop', 'green2-nan-ble.ble'],
         # bluez is pinned to revision 410 below. Do not create current before

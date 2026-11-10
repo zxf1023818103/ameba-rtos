@@ -31,5 +31,5 @@ read -r -a nl_flags <<< "$("$pkg" --cflags --libs libnl-3.0 libnl-genl-3.0)"
     -o "$output/pasn_vendor_events"
 cp "$hostap/wpa_supplicant/libpasn.so" "$output/"
 cp "$scripts/aware_green2.conf" "$scripts/nan_echo.py" "$scripts/run-services.sh" \
-    "$scripts/prepare-radio.sh" "$output/"
+    "$scripts/prepare-radio.sh" "$scripts/watch-radio.py" "$output/"
 echo "Services built in $output"

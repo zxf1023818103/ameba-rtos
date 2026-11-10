@@ -1,5 +1,5 @@
 name: green2-nan-ble
-version: '20261109.11'
+version: '20261110.14'
 summary: Green2 USB NAN and BLE integration test
 description: |
   Development test services for a Green2 flash-boot USB composite device.
@@ -25,7 +25,7 @@ apps:
     restart-condition: on-failure
     restart-delay: 5s
     stop-timeout: 20s
-    plugs: [network, network-bind, network-control, hardware-observe]
+    plugs: [network, network-bind, network-control, network-observe, hardware-observe]
   ble:
     command: bin/run-ble
     command-chain: [bin/environment]

@@ -276,6 +276,8 @@ typedef uint32_t u32;
 typedef void *rtos_mutex_t;
 typedef void *rtos_sema_t;
 #define CONFIG_AMEBAGREEN2 1
+#define GREEN2_NAN_USB_RX_RESERVE 1
+#define NAN_WLAN_INDEX 2
 #define CACHE_LINE_SIZE 4
 #define MAXIMUM_ETHERNET_PACKET_SIZE 64
 #define SKB_WLAN_TX_EXTRA_LEN 16
@@ -302,6 +304,9 @@ static volatile u32 whc_usb_generation;
 static u8 wifi_whc_usb_status;
 static unsigned critical, sends, arms, freed, payload_freed, allocations, stale_arms;
 static int wakes, tokens = 1, tx_fail, switch_while_waiting, switch_during_rx;
+static int alloc_fail;
+static unsigned exhausted_drops;
+static void whc_usb_nan_record_drop(void) { ++exhausted_drops; }
 static jmp_buf worker_done;
 static struct sk_buff *handed_off;
 static void whc_usb_dev_request_config(u8);
@@ -336,6 +341,7 @@ static void usbd_wake_host(void) {}
 static void rtos_time_delay_ms(unsigned t) { (void)t; }
 static struct sk_buff *dev_alloc_skb(unsigned n, unsigned reserve) {
     (void)reserve;
+    if (alloc_fail) return NULL;
     struct sk_buff *s = calloc(1, sizeof(*s)); assert(s);
     s->data = calloc(1, n); assert(s->data); ++allocations; return s;
 }
@@ -401,6 +407,41 @@ int main(void) {
     assert((void *)whc_usb_priv.rx_skb_addr[0] != handed_off);
     assert(whc_usb_configured && whc_usb_priv.irq_info.task_ridx == 0);
     dev_kfree_skb_any(handed_off);
+    handed_off = NULL;
+    /* The former 16-buffer early-drop watermark must not reject any
+     * Ethernet payload, including TCP and either SRT header flag. */
+    for (unsigned variant = 0; variant < 4; ++variant) {
+        unsigned free_count = variant == 0 ? 15 : 2;
+        skbpriv.skb_buff_used = skbpriv.skb_buff_num - free_count;
+        s = (struct sk_buff *)whc_usb_priv.rx_skb_addr[0];
+        m = (void *)s->data;
+        memset(s->data, variant & 1 ? 0x80 : 0, USB_BUFSZ);
+        m->event = WHC_WIFI_EVT_XIMT_PKTS; m->data_len = 16; m->wlan_idx = 2;
+        whc_usb_priv.irq_info.task_ridx = 0;
+        whc_usb_priv.irq_info.rxdone_epnum[0] = 5;
+        whc_usb_priv.irq_info.len[0] = 32;
+        before = arms; wakes = 1; worker();
+        assert(handed_off == s && arms == before + 1 && !exhausted_drops);
+        assert((void *)whc_usb_priv.rx_skb_addr[0] != s && !stale_arms);
+        dev_kfree_skb_any(handed_off); handed_off = NULL;
+    }
+    /* Exhaustion and allocator failure must re-arm the same OUT buffer
+     * without transferring its ownership or stalling the command path. */
+    for (unsigned variant = 0; variant < 3; ++variant) {
+        skbpriv.skb_buff_used = skbpriv.skb_buff_num - variant;
+        alloc_fail = variant == 2;
+        s = (struct sk_buff *)whc_usb_priv.rx_skb_addr[0];
+        m = (void *)s->data;
+        m->event = WHC_WIFI_EVT_XIMT_PKTS; m->data_len = 16; m->wlan_idx = 2;
+        whc_usb_priv.irq_info.task_ridx = 0;
+        whc_usb_priv.irq_info.rxdone_epnum[0] = 5;
+        whc_usb_priv.irq_info.len[0] = 32;
+        before = arms; wakes = 1; worker();
+        assert(!handed_off && arms == before + 1 && exhausted_drops == variant + 1);
+        assert((void *)whc_usb_priv.rx_skb_addr[0] == s && !stale_arms);
+        assert(!whc_usb_priv.irq_info.wait_xmit_skb);
+    }
+    alloc_fail = 0;
     for (unsigned i=0; i<3; ++i) dev_kfree_skb_any((void *)whc_usb_priv.rx_skb_addr[i]);
     return 0;
 }

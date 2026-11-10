@@ -26,6 +26,8 @@ phy=$(readlink -f "/sys/class/net/$base/phy80211")
     echo "Create nan0 on the Green2 PHY first (see README)." >&2; exit 1;
 }
 iw dev nan0 info | grep -q 'type NAN' || { echo "nan0 is not NAN" >&2; exit 1; }
+base_index=$(cat "/sys/class/net/$base/ifindex")
+nan_index=$(cat /sys/class/net/nan0/ifindex)
 if pgrep -f '(^|/)(rtw_aware[^ /]*|pasn_live)( |$)' >/dev/null; then
     echo "Stop the existing NAN publisher/responder before starting this bundle." >&2
     exit 1
@@ -67,6 +69,10 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+# Netlink event sockets can survive USB removal without delivering an error.
+# Retire the entire publisher/PASN generation when its interface identity changes;
+# the supervisor then discovers the new PHY and recreates NAN before publishing.
+python3 -u "$bundle/watch-radio.py" "$base" "$base_index" "$nan_index" "$phy" & children+=("$!")
 # A FIFO lets the supervisor own both processes and never log raw PASN payloads.
 rm -f pasn-events
 mkfifo -m 600 pasn-events

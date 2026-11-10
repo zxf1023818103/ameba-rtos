@@ -22,7 +22,7 @@ uint32_t rtos_timer_is_timer_active(rtos_timer_t);
             (root / 'test.c').write_text('''#include "fix.c"
 static uint8_t storage[2360];
 uint8_t *g_nanpriv = storage;
-static uint8_t control[1776];
+static uint8_t control[1784 + 4];
 uint8_t *g_nanctrl;
 static unsigned active, armed;
 static unsigned events[3], event_count;
@@ -46,6 +46,16 @@ int main(void) {
     assert(armed == 2 && event_count == 3 && (storage[2350] & 4));
     assert(events[0] == 21 && events[1] == 11 && events[2] == 5);
     storage[2350] = 1; start(); assert(armed == 2 && event_count == 3);
+    /* A host-session reset must not touch a live controller, and must clear
+     * every retired schedule byte without overwriting the allocation. */
+    memset(control, 0xa5, sizeof(control));
+    green2_nan_reset_discovery_controller(); assert(control[0] == 0xa5);
+    storage[2350] = 2;
+    green2_nan_reset_discovery_controller(); assert(control[0] == 0xa5);
+    storage[2350] = 0;
+    green2_nan_reset_discovery_controller();
+    for (unsigned i = 0; i < 1784; ++i) assert(control[i] == 0);
+    for (unsigned i = 1784; i < sizeof(control); ++i) assert(control[i] == 0xa5);
 }
 ''')
             subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror',

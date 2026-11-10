@@ -261,7 +261,9 @@ COM11 已由用户确认连接本板下载口，使用 1.5 Mbps 仅更新 `app.b
 缺少 peer 时创建普通未认证对象，仍由原 PASN 路径验证密钥。诊断日志仅
 包含帧类型、时间、MAC 和状态，不输出密钥或载荷。
 
-USB 拥塞保护按 SRT 包头 Flag 分类，不使用 DSCP 或包长判定优先级。
+以下是 2026-11-09 的历史实现；2026-11-10 已删除分类器及 16-buffer
+提前丢包逻辑，详见文末吞吐回归记录。历史 USB 拥塞保护按 SRT 包头 Flag
+分类，不使用 DSCP 或包长判定优先级。
 解析 Ethernet、IPv4/IPv6 和 UDP 后，仅对源/目的端口为 9000、具有完整
 16 字节 SRT 头的报文检查首字节最高位：1 为控制，0 为数据。
 空闲 skb 少于 16 时，数据包丢弃并重新挂接接收缓冲；控制包可使用余量。
@@ -590,3 +592,138 @@ USB 传输故障已消除。全部证据在
 `7.0.0-38.38r1-green2.6`（x5）并重启，模块 srcversion 核对为
 `A4F1DD8995D8E2A90701033`。NAN/BLE/camera 服务恢复，BLE 广播实例为 1，
 TCP 8000 / SRT 9000 监听正常；本轮未复测手机端收发。
+
+### 视频传输中串口复位与虚拟机正常重启（2026-11-10）
+
+本轮直接在 iPhone 显示视频、接收字节数持续增长时，经 COM46 / 1.5 Mbps
+发送 `reboot`。不提前停止主机服务，不在故障后手动重启 App 或发布进程。
+仍使用上述 kernel `.6`，测试链路为 USB Green2 / 2.4 GHz NAN、原生
+1280×720 MJPEG、SRT 9000，iPhone 通过局域网调试。
+
+基线暴露了三层恢复缺口：
+
+- USB 重新枚举成功、内核未崩溃，但原 netlink 事件套接字仍绑定旧接口。
+  `run-services.sh` 现在启动 `watch-radio.py`，跟踪 managed/NAN 接口的
+  `(ifindex, PHY 路径)`；任一变化即结束整组旧 publisher/PASN/echo 进程。
+  snap 的已有失败重启策略重新发现 USB、建立 NAN 并发布。camera 已有的
+  接口监视逻辑负责关闭旧 SRT listener 并绑定新接口。
+- App 原先收到 `Connection was broken` 就停止播放。`NANSRTPlayer` 现在
+  对已经成功播放的前台会话保留设备授权，重新发现服务、建立 NAN/SRT 并
+  恢复播放器；连续失败采用 1–5 秒退避。用户停止或离开页面会取消重连。
+- 前两项修改通过三次模组复位后，正常重启 VM 仍复现服务不可发现。
+  Linux 正常启动、发布成功，但串口读取 TWT1 仍是
+  `0xefffffffffffffff` 的 warmup 值，视频 180 秒内未恢复。
+  原生 `rtw_nan_intfs_init()` 清理私有状态及 scheduler，却保留了发现
+  controller。现在在旧 NAN 完全停用、接口清理后重置其 1784 字节状态，
+  再初始化新接口。只在 `AMEBA_GREEN2_NAN_RESTART_FIX=ON` 且旧 NAN 未运行
+  时执行，仍依赖 CMake 的固定库 SHA 校验；不清除主机配对缓存。
+
+最终固件 `app.bin` SHA-256 为
+`8fab3b814a5dd4266cd1964a3b9c21c7a873fdc392ce1f97a01f83d6379547ca`。
+COM46 仅更新 app 分区，设备 checksum 一致，工具 PASS。应用 snap 为
+`20261110.13`（x12）。新增 `network-observe` 并连接该接口，避免轮询
+sysfs 时反复产生 devmode 的权限审计日志；已有镜像升级时执行：
+
+```sh
+sudo snap connect green2-nan-ble:network-observe
+```
+
+最终验证保持同一个 iPhone App 进程（PID 56600）和原配对，顺序如下：
+
+| 视频传输中的操作 | 结果 | 操作至重新显示画面 |
+| --- | --- | ---: |
+| VM `sudo reboot`，第 1 次 | 自动恢复 | 35.678 s |
+| COM46 `reboot`，第 1 次 | 自动重枚举、恢复视频 | 12.965 s |
+| COM46 `reboot`，第 2 次 | 自动重枚举、恢复视频 | 13.297 s |
+| COM46 `reboot`，第 3 次 | 自动重枚举、恢复视频 | 13.686 s |
+| VM `sudo reboot`，第 2 次 | 自动恢复 | 32.180 s |
+
+每轮恢复后还核对连续两次统计的接收字节及 `displayedPictures` 均增长。
+上述是操作时间与 App 首个显示帧日志的对齐，不是光学测量。三次模组
+复位的 USB 描述符约 1.02–1.06 秒重新出现，旧 netdev 移除约 24–28 ms；
+Linux boot ID 保持不变。两次 VM 重启 boot ID 正常变化，最后一次系统
+启动耗时 12.924 秒。管理 SSH 探测约 80 秒恢复，晚于视频；该轮 DHCP
+在内核启动后 9.378 秒取得地址、SSH 服务于 65.423 秒开始启动，未将
+管理连接恢复时间当作视频或内核启动时间。
+
+五轮未出现内核 BUG/Oops/panic/WARN、WHC 超时/短响应、注销卡死，模组
+串口无 HardFault/MemManage/断言复位。控制器重置后 TWT1 不再停在上述
+warmup 值。最后 NAN/BLE/camera 均 active、BlueZ powered、广播实例为 1，
+视频继续接收。这是五轮端到端回归，未覆盖物理断电、5 GHz、重新配对、
+Android 内核或长期压力；工厂 VMDK 未重新生成。
+最后一次恢复后持续接收至 09:54，累计约 104 MB、显示 1241 帧；09:54:04
+App 进入后台，按原有前台视频规则正常关闭 SRT，未将其计作断链故障。
+
+新增 `test_radio_generation.py` 覆盖接口消失、同名接口 ifindex 变化及 PHY
+替换；`test_nan_restart.py` 覆盖活跃 controller 不被清理及停用后的边界。
+这两项、`test_usb_reconfigure.py` 五项及 `test_nan_stale_tx.py` 均通过，
+固件和 iOS 实机构建通过。私有证据、逐轮 JSON、固件及构建/烧录记录位于
+`/home/zxf/green2-video-reset-20261110/`，原始串口/PASN 日志不提交。
+
+### 2026-11-10：删除 SRT 分类，复测 TCP 吞吐
+
+删除 `whc_dev_nan_usb_control.h` 及对应分类测试；USB OUT 不再解析
+Ethernet/IP/TCP/UDP/SRT 包头，也不再因空闲 skb 少于 16 而提前丢弃
+NAN 数据。`AMEBA_GREEN2_NAN_USB_RX_RESERVE` 保留为兼容构建选项，
+现在只负责 160 个 skb 的池及耗尽保护：余量少于 2 或分配失败时复用
+原 OUT 缓冲，避免连带阻塞 WHC 命令。USB generation、NDP 生命周期
+及重启发现 controller 修复均保留。摄像头的 libSRT 传输未删除。
+
+新 `app.bin` SHA-256：
+`d2f2f0c37f8dc74e751dbc2550613ae0c21c74f4c897a99138762b058d788964`。
+已通过 COM46 / CH340、1.5 Mbps 写入 app 分区，工具与板端 checksum
+均为 `0x324f0099`，结果 PASS。boot 与配对缓存保留。
+
+同一 Green2 USB（480 Mbps）、Core kernel `.6`、iPhone 13 Pro、
+Flash Studio TCP/bulk 测试，每方向 10 秒，各组 3 轮，双方载荷字节
+计数全部一致。上传为 iPhone → Core，下载为 Core → iPhone；均按
+接收端计时，不把 socket 提交速度当成交付速度。
+
+| 固件 / 主机配置 | NDP 调度频道 | 上传均值 Mbps | 下载均值 Mbps |
+| --- | --- | ---: | ---: |
+| 删除前，`00` / 2GHz | 6 | 11.800 | 18.885 |
+| 删除后，`00` / 2GHz | 6 | 13.407 | 23.195 |
+| 删除后，`CN` / dual | 36、149 | 21.450 | 28.309 |
+
+[逐轮 App JSON、汇总与频道请求记录](results/20261110-no-srt/) 是本次
+测试证据。删除前串口曾报告 `congestion drops=1954 skb_free=15`；
+新固件没有该提前丢包路径。此为顺序进行的小样本测试，双频组还修改了
+区域设置，不能将全部差异归因于单一因素。用户报告的旧版 40–50 Mbps
+尚未复现，完整退化原因仍未确定。摄像头 `SRTO_MAXBW=1500000` B/s
+只作用于 UDP 9000 的视频 socket，不是 TCP 8000 吞吐测试的限速器。
+
+运行时可配置 NAN 频段，默认仍为 `2GHz`；区域默认沿用系统配置。
+例如本测试环境已核对为 CN，可执行：
+
+```sh
+sudo snap set green2-nan-ble nan-band=dual nan-country=CN
+sudo snap restart green2-nan-ble.nan
+```
+
+`nan-band` 仅接受 `2GHz` / `dual`。`nan-country` 在每次重新枚举后应用，
+不因选择双频就自动推断国家码。snap `.14` 已部署并保存上述配置。
+
+Band 2（52–64）/ Band 3（100–144）另作了配置准入检查。当前 CN
+PHY 将 52–64 标为 radar detection，将 100–144 标为 disabled。
+逐个调用厂商 secondary master channel SET 后 GET，16 个频道均未
+生效，读回仍为 149；52/56/60/64 另有固件 `SCAN_PASSIVE` 拒绝日志。
+这项接口控制发现频道，不是强制 NDP 数据频道的接口，不能把此次拒绝
+当作所有 DFS 数据链路场景都不支持的证明，也没有据此生成吞吐数值。
+
+另将 MikroTik AP 从频道 36 切至 52，等待 DFS CAC 完成，并临时关闭
+2.4 GHz AP。iPhone 在约 0.451 秒发现服务，但四次 NDP 建链均失败，
+最终 App 测速超时、载荷结果为空。固件为这些请求安装的调度仍为
+149，没有观察到频道 52 的 NDP；此前已连接的视频也曾继续使用 149。
+所以这轮不是 Band 2 吞吐结果，也不能单凭它断言所有 DFS 数据链路
+均不支持。测试后已恢复 AP 频道 36 及 2.4 GHz，详见
+`results/20261110-no-srt/band23.json` 和 `ap52-ndp-check-1.json`。
+恢复频道 36 后首次重连也在 NDP 阶段失败；重启 NAN 服务并重新打开
+App 视频后，4.653 秒出现首帧，接收字节和显示帧数继续增长，无需
+清除配对、复位模组或重启 VM。频道切换后的建链异常原因尚未确定。
+随后补测一轮 TCP 成功，上传 18.490 Mbps、下载 27.504 Mbps；该轮仅
+验证恢复，没有并入前述三轮均值。
+
+新固件 / snap `.14` 的双频视频回归：同一个 App 进程连续完成一次
+视频中串口 reboot 和一次正常 VM `sudo reboot`，画面分别在
+7.134 秒、31.470 秒恢复，后续接收字节与显示帧数继续增长。VM 的 SSH
+在后者约 80 秒才重新可达，视频已提前恢复；两者计时未混用。

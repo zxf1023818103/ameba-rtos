@@ -141,7 +141,7 @@ set(target_name)
 
 option(AMEBA_GREEN2_NAN_STARTUP_TRACE "Metadata-only Green2 NAN startup diagnostics" OFF)
 option(AMEBA_GREEN2_NAN_AUTH_PEER_FIX "Experimental Auth1-before-Subscribe peer initialization" OFF)
-option(AMEBA_GREEN2_NAN_USB_RX_RESERVE "Reserve receive buffers during NAN USB video congestion" OFF)
+option(AMEBA_GREEN2_NAN_USB_RX_RESERVE "Enlarge NAN USB skb pool and recover OUT endpoints on buffer exhaustion" OFF)
 option(AMEBA_GREEN2_NAN_STALE_TX_FIX "Flush data TX on final NDP teardown and reject stale NDI traffic" OFF)
 option(AMEBA_GREEN2_NAN_RESTART_FIX "Restore native discovery scheduling after a new NAN start" OFF)
 if(AMEBA_GREEN2_NAN_RESTART_FIX)

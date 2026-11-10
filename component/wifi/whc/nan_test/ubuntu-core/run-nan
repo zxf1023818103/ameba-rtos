@@ -1,5 +1,15 @@
 #!/bin/bash
 set -euo pipefail
+band=$(snapctl get nan-band)
+country=$(snapctl get nan-country)
+band=${band:-2GHz}
+case "$band" in
+    2GHz|dual) ;;
+    *) echo 'nan-band must be 2GHz or dual' >&2; exit 2 ;;
+esac
+[[ -z $country || $country =~ ^[A-Z]{2}$ || $country == 00 ]] || {
+    echo 'nan-country must be a two-letter country code or 00' >&2; exit 2;
+}
 # USB ownership must be transferred by the operator; this never changes drivers
 # or takes a different adapter away from another application.
 base=
@@ -39,5 +49,8 @@ if [[ ! -e /sys/class/net/nan0 ]]; then
         ip link set "$nan" name nan0
     fi
 fi
-"$SNAP/services/prepare-radio.sh" "$base" 2GHz
+# Apply an explicitly configured region after enumeration, including a new
+# PHY created by USB reset. Do not silently change the region for dual-band.
+if [[ -n $country ]]; then iw reg set "$country"; fi
+"$SNAP/services/prepare-radio.sh" "$base" "$band"
 exec "$SNAP/services/run-services.sh" "$base"
