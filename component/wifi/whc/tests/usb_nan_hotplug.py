@@ -26,6 +26,8 @@ def main():
     parser.add_argument('--ip', default='ip')
     parser.add_argument('--rounds', type=int, default=20)
     parser.add_argument('--active', action='store_true', help='start 2.4 GHz NAN before removal')
+    parser.add_argument('--up-first', action='store_true',
+                        help='require premature NAN UP to fail, then issue two STOP_NAN requests')
     parser.add_argument('--mode', choices=('device', 'interface'), default='device',
                         help='deauthorize the composite device, or unbind only WHC_USB')
     parser.add_argument('--output', required=True)
@@ -48,6 +50,7 @@ def main():
     boot_id = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
     device_number = (usb/'devnum').read_text().strip()
     result = {'boot_id': boot_id, 'usb': args.usb_device, 'active_nan': args.active,
+              'up_before_start': args.up_first,
               'mode': args.mode, 'usb_device_number': device_number, 'rounds': []}
     # A netdev can exist even when an API wrapper ignored a transport timeout.
     # Observe fresh kernel records as well as interface lifecycle assertions.
@@ -126,9 +129,24 @@ def main():
             phy = radio()
             assert phy
             name = create(phy)
-            if args.active:
+            if args.active or args.up_first:
                 info = run(args.iw, 'dev', name, 'info').stdout
                 wdev = re.search(r'\bwdev (0x[0-9a-f]+)', info).group(1)
+            if args.up_first:
+                early_up = run(args.ip, 'link', 'set', name, 'up', check=False)
+                assert early_up.returncode != 0, 'NAN UP before START_NAN was incorrectly accepted'
+                link = json.loads(run(args.ip, '-j', 'link', 'show', 'dev', name).stdout)[0]
+                assert 'UP' not in link['flags'], 'Rejected NAN UP still changed the link state'
+                # A HAL may attempt cleanup after its failed enable. Neither
+                # STOP should release a nonexistent NAN open reference.
+                stop_codes = []
+                for _ in range(2):
+                    stop = run(args.iw, 'wdev', wdev, 'nan', 'stop', check=False)
+                    # Kernels with NEED_WDEV_UP reject this before entering
+                    # cfg80211_stop_nan: -ENETDOWN is the expected safe result.
+                    assert stop.returncode in {0, 156}, (stop.returncode, stop.stderr)
+                    stop_codes.append(stop.returncode)
+            if args.active:
                 run(args.iw, 'wdev', wdev, 'nan', 'start', 'pref', '112', 'bands', '2GHz')
                 run(args.ip, 'link', 'set', name, 'up')
             errors = []
@@ -178,6 +196,9 @@ def main():
             row = {'round': number, 'old_phy': phy, 'new_phy': fresh,
                    'race_exit_codes': codes, 'removed_phy_exit_code': p.returncode,
                    'seconds': round(time.monotonic()-started, 3), 'passed': True}
+            if args.up_first:
+                row['premature_up_exit_code'] = early_up.returncode
+                row['pre_start_stop_exit_codes'] = stop_codes
             result['rounds'].append(row)
             save()
             print(json.dumps(row), flush=True)

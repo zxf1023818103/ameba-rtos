@@ -38,7 +38,7 @@ python3 - <<'PY'
 from pathlib import Path
 p = Path('/work/pc-kernel-tree/meta/snap.yaml')
 import re
-s = re.sub(r'^version: .*$', 'version: 7.0.0-38.38r1-green2.5', p.read_text(), flags=re.M)
+s = re.sub(r'^version: .*$', 'version: 7.0.0-38.38r1-green2.6', p.read_text(), flags=re.M)
 p.write_text(s)
 PY
 fi

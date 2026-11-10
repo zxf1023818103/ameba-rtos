@@ -322,10 +322,34 @@ static const struct net_device_ops rtw_ndev_ops_ap = {
 };
 
 #ifdef CONFIG_NAN
+static int rtw_ndev_open_nan(struct net_device *pnetdev)
+{
+	struct wireless_dev *wdev = pnetdev->ieee80211_ptr;
+
+	if (!global_idev.netdev_ready || !wdev ||
+		wdev != global_idev.pwdev_global[2]) {
+		return -ENODEV;
+	}
+
+	/* cfg80211 normally gives NAN no netdev. With our vendor data netdev,
+	 * wdev_running() instead sees IFF_UP: an early UP makes START_NAN fail
+	 * with EEXIST before it sets is_running or acquires its open reference.
+	 * STOP_NAN/NETDEV_GOING_DOWN can then release a reference never acquired,
+	 * leaving wiphy_unregister() waiting forever for opencount == 0.
+	 * ndo_open and START_NAN are serialized by RTNL. Only let the data
+	 * netdev open after cfg80211 has recorded a successful START_NAN. */
+	if (!wdev->is_running) {
+		netdev_warn(pnetdev, "START_NAN must succeed before bringing the NAN data interface UP\n");
+		return -EAGAIN;
+	}
+
+	return rtw_ndev_open(pnetdev);
+}
+
 const struct net_device_ops rtw_ndev_ops_nan = {
 	.ndo_init = rtw_ndev_init,
 	.ndo_uninit = rtw_ndev_uninit,
-	.ndo_open = rtw_ndev_open,
+	.ndo_open = rtw_ndev_open_nan,
 	.ndo_stop = rtw_ndev_close,
 	.ndo_start_xmit = rtw_xmit_entry,
 	.ndo_select_queue = rtw_ndev_select_queue,

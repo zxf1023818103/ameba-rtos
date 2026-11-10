@@ -39,6 +39,47 @@ def compile_run(source):
 
 
 class USBReconfigureTest(unittest.TestCase):
+    def test_nan_netdev_rejects_up_before_successful_start(self):
+        source = WHC / 'whc_host_linux/driver/netdev/whc_host_netdev_ops.c'
+        compile_run(r'''
+#include <assert.h>
+#include <errno.h>
+#include <stdbool.h>
+#include <stddef.h>
+struct wireless_dev { bool is_running; };
+struct net_device { struct wireless_dev *ieee80211_ptr; };
+static struct {
+    bool netdev_ready;
+    struct wireless_dev *pwdev_global[3];
+} global_idev;
+static unsigned opens;
+#define netdev_warn(...) ((void)0)
+static int rtw_ndev_open(struct net_device *dev) {
+    assert(dev); ++opens; return 0;
+}
+''' + function(source, 'rtw_ndev_open_nan') + r'''
+int main(void) {
+    struct wireless_dev nan = {false}, other = {true};
+    struct net_device dev = {&nan};
+    global_idev.pwdev_global[2] = &nan;
+    assert(rtw_ndev_open_nan(&dev) == -ENODEV);
+    global_idev.netdev_ready = true;
+    /* Before START_NAN, or after a failed START_NAN, an UP must not
+     * reach the normal opener or trigger NETDEV_UP accounting. */
+    assert(rtw_ndev_open_nan(&dev) == -EAGAIN);
+    assert(!nan.is_running && opens == 0);
+    nan.is_running = true; /* cfg80211 records successful START_NAN */
+    assert(rtw_ndev_open_nan(&dev) == 0 && opens == 1);
+    nan.is_running = false; /* stopped NAN must be started again */
+    assert(rtw_ndev_open_nan(&dev) == -EAGAIN && opens == 1);
+    dev.ieee80211_ptr = &other;
+    assert(rtw_ndev_open_nan(&dev) == -ENODEV && opens == 1);
+    dev.ieee80211_ptr = NULL;
+    assert(rtw_ndev_open_nan(&dev) == -ENODEV && opens == 1);
+    return 0;
+}
+''')
+
     def test_bt_rx_callback_copies_without_heap_operations(self):
         source = WHC.parents[1] / 'bluetooth/driver/bt_inic/bt_inic_usb.c'
         # Use the actual queue element layout as well as the actual callback.

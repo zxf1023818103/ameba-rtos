@@ -529,3 +529,64 @@ USB devnum，防止将静默超时或固件重启当成通过。此操作不等�
 日志、逐轮 JSON、构建日志及 kernel snap 留在
 `/home/zxf/green2-usb-reconnect-20261110/`；此前空指针复现记录仍在
 `/home/zxf/green2-usb-lifecycle-20261109/`，未把配对密钥写入仓库。
+
+### 旧 HAL 提前 UP 导致的注销等待
+
+随后在家中电脑的 YM6252 Android 项目中核对了实际 GKI 源码，版本为
+`6.12.23-android16-5-gaf4cb0e2168b-4k`。旧 HAL 先 UP `nan0`，再发
+`START_NAN`，并把 `-EEXIST` 视为成功；新 HAL 已修正启动顺序和错误处理。
+Android 的实测阻塞栈为 `wiphy_unregister -> rtw_wiphy_deinit ->
+rtw_netdev_remove -> whc_usb_host_disconnect`，故障板当时的计数没有抓到。
+
+该驱动给 NAN 附带了数据 netdev，而 cfg80211 原本将 NAN 视为没有 netdev
+的接口。`wdev_running()` 有 netdev 时读取 `netif_running()`，因此提前
+UP 会使 START 提前返回 EEXIST，未设置 `wdev->is_running` 或增加 NAN
+的 open 引用。下表是 6.12.23 源码推导的该 NAN 接口计数增量，并非
+Android 故障板上的实测值：
+
+| 操作 | opencount 相对初值 |
+| --- | ---: |
+| NETDEV_UP | +1 |
+| START_NAN 返回 EEXIST | +1 |
+| 网卡仍 UP 时执行 STOP_NAN | 0 |
+| NETDEV_DOWN | -1 |
+
+`wiphy_unregister()` 等待计数等于 0，负数也不会通过。当前 Ubuntu
+7.0 内核还会在 NETDEV_GOING_DOWN 中停止 NAN，具体停止路径与 Android
+6.12 不同；不能把两者的调用次数混为同一份板端证据。
+
+`rtw_ndev_open_nan()` 现要求 cfg80211 已记录 `is_running=true`，否则
+返回 `-EAGAIN`，不打开数据网卡。退出中的设备返回 `-ENODEV`。这在驱动
+入口阻止旧 HAL 的提前 UP，不直接修改 cfg80211 私有计数，也不能修复
+已经失衡的旧内核实例。正常顺序仍为 START 成功后再 UP；HAL 必须检查
+两步的返回值，不应将 EEXIST 直接等同于本次 enable 成功。
+
+五项确定性 C 回归通过。USB NAN、USB wpaoh/FW_DOWNLOAD、SDIO NAN
+构建通过；另已在 YM6252 项目的原 GKI 构建目录用 Clang 生成 ARM64
+候选模块，vermagic 与上述版本一致。候选文件在家中电脑：
+`/home/zxf10/ym6252-android-wifi/out/green2-nan-up-order/whc_usb-up-order.ko`，
+SHA-256 `b21d6e99c4f1dfdf6de3b6b593333cfba828188727f18938471fab883071c0f6`。
+该构建使用独立输出副本；Android ADB 当时仍离线，未宣称已上板验证。
+
+VMware 使用同一驱动补丁和当前固件实测：
+
+| 场景 | 结果 |
+| --- | --- |
+| 提前 UP 被拒绝、连续两次 STOP、直接解绑 WHC | 20/20，0.087–0.161 s |
+| 同上，再正常 START/UP 后解绑 WHC | 20/20，0.094–0.169 s |
+| 正常 START/UP 后复合 USB 重接，设备重新枚举后的复测 | 20/20，0.108–2.199 s |
+
+STOP 在尚未启动时被 nl80211 以 `-ENETDOWN` 拒绝。使用运行中内核的
+BTF 推导字段偏移，并通过临时 kprobe 读取注销入口，63 次
+`wiphy_unregister` 的 `opencount` 全部为 0；未写入或强制归零计数。
+临时探针在测试后已移除。`--up-first` 可复现前两行，搭配 `--active`
+决定在错误清理后是否再正常启动 NAN。
+
+另一次复合 USB 对照仅完成第 1 轮，第 2 轮注销正常后出现 Host API
+0x7 超时，随后 USB 重枚举，COM11 也掉线；该异常的原因仍未确定。
+这份失败记录保留，不能用后续 20 轮通过覆盖它，也不能据此宣称所有
+USB 传输故障已消除。全部证据在
+`/home/zxf/green2-nan-up-order-20261110/`。Core 已安装内核包
+`7.0.0-38.38r1-green2.6`（x5）并重启，模块 srcversion 核对为
+`A4F1DD8995D8E2A90701033`。NAN/BLE/camera 服务恢复，BLE 广播实例为 1，
+TCP 8000 / SRT 9000 监听正常；本轮未复测手机端收发。
