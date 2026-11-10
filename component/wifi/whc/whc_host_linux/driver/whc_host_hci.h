@@ -168,6 +168,10 @@ struct whc_device {
 	struct wiphy			*pwiphy_global;
 	struct net_device		*pndev[WHC_MAX_NET_PORT_NUM];
 	struct wireless_dev		*pwdev_global[WHC_MAX_NET_PORT_NUM];
+	/* Published only after probe completes; RTNL serializes virtual-interface
+	 * creation with the transition to removal, before any parent netdev dies. */
+	bool netdev_ready;
+	bool wiphy_registered;
 
 	/* ops for upper layer. */
 	struct cfg80211_ops		rtw_cfg80211_ops;

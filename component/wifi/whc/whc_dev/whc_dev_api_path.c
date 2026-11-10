@@ -719,6 +719,11 @@ void whc_event_nan_init(u32 api_id, u32 *param_buf)
 	(void)param_buf;
 	int ret = 0;
 
+	/* A host can disappear without sending NAN_DEINIT (USB unplug, driver
+	 * unbind or host reboot). Native init clears the NAN state even if its
+	 * timers and interface are still live. Retire that session first; native
+	 * deinit is a no-op when the interface has not been initialized. */
+	rtw_nan_intfs_deinit();
 	rtw_nan_intfs_init();
 	whc_send_api_ret_value(api_id, (u8 *)&ret, sizeof(ret));
 }

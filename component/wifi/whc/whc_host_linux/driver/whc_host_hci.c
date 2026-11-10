@@ -11,6 +11,9 @@ int whc_host_init(void)
 {
 	struct whc_device *idev = &global_idev;
 	int i;
+#if defined(CONFIG_WHC_WIFI_API_PATH)
+	int ret;
+#endif
 
 #if defined(CONFIG_WHC_HCI_SDIO)
 	idev->intf_priv = &whc_sdio_priv;
@@ -43,6 +46,8 @@ int whc_host_init(void)
 #endif
 
 	global_idev.host_init_done = 1;
+	/* USB may have queued data before host workers/event locks were ready. */
+	whc_host_recv_notify();
 
 	for (i = 0; i < WHC_MAX_NET_PORT_NUM; i++) {
 		global_idev.is_need_4way[i] = 0;
@@ -51,7 +56,12 @@ int whc_host_init(void)
 
 	memset(&global_idev.wifi_user_config, 0, sizeof(struct wifi_user_conf));
 #if defined(CONFIG_WHC_WIFI_API_PATH)
-	whc_host_set_user_config(&global_idev.wifi_user_config);
+	ret = whc_host_set_user_config(&global_idev.wifi_user_config);
+	if (ret) {
+		/* Workers exist, but no usable firmware answered. Probe must unwind
+		 * them and the registered wiphy instead of publishing dead interfaces. */
+		return ret;
+	}
 
 	/* tell KM4 to open wifi */
 	whc_host_wifi_on();
@@ -74,5 +84,6 @@ void whc_host_deinit(void)
 #endif
 
 	whc_host_recv_deinit();
+	global_idev.host_init_done = 0;
 }
 

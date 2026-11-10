@@ -155,12 +155,16 @@ static int rtw_ndev_close(struct net_device *pnetdev)
 
 	dev_dbg(global_idev.pwhc_dev, "[whc]: %s %d\n", __func__, rtw_netdev_idx(pnetdev));
 #if defined(CONFIG_WHC_WIFI_API_PATH)
-	whc_host_dev_driver_is_mp(&is_mp);
-	if (is_mp != 1) {
-		ret = whc_host_scan_abort();
-		if (ret) {
-			dev_err(global_idev.pwhc_dev, "[whc]: %s abort wifi scan failed!\n", __func__);
-			return -EPERM;
+	/* Removal has already stopped USB RX. Finish local queue/scan cleanup
+	 * even though firmware can no longer acknowledge a scan-abort command. */
+	if (global_idev.netdev_ready) {
+		whc_host_dev_driver_is_mp(&is_mp);
+		if (is_mp != 1) {
+			ret = whc_host_scan_abort();
+			if (ret) {
+				dev_err(global_idev.pwhc_dev, "[whc]: %s abort wifi scan failed!\n", __func__);
+				return -EPERM;
+			}
 		}
 	}
 
@@ -219,12 +223,14 @@ static int rtw_ndev_close_ap(struct net_device *pnetdev)
 
 	dev_dbg(global_idev.pwhc_dev, "[whc]: %s %d\n", __func__, rtw_netdev_idx(pnetdev));
 
-	whc_host_dev_driver_is_mp(&is_mp);
-	if (is_mp != 1) {
-		ret = whc_host_scan_abort();
-		if (ret) {
-			dev_err(global_idev.pwhc_dev, "[whc]: %s abort wifi scan failed!\n", __func__);
-			return -EPERM;
+	if (global_idev.netdev_ready) {
+		whc_host_dev_driver_is_mp(&is_mp);
+		if (is_mp != 1) {
+			ret = whc_host_scan_abort();
+			if (ret) {
+				dev_err(global_idev.pwhc_dev, "[whc]: %s abort wifi scan failed!\n", __func__);
+				return -EPERM;
+			}
 		}
 	}
 
@@ -239,7 +245,7 @@ static int rtw_ndev_close_ap(struct net_device *pnetdev)
 	netif_tx_stop_all_queues(pnetdev);
 	netif_carrier_off(pnetdev);
 
-	if (is_mp != 1) {
+	if (global_idev.netdev_ready && is_mp != 1) {
 		/* if2 deinit (SW) */
 		whc_host_deinit_ap();
 	}
@@ -346,6 +352,14 @@ int rtw_nan_iface_alloc(struct wiphy *wiphy,
 	int softap_addr_offset_idx = global_idev.wifi_user_config.softap_addr_offset_idx;
 	unsigned char nan_mac[ETH_ALEN];
 
+	/* Keep this check in the allocator as well as add_virtual_intf: neither
+	 * a stale wiphy nor a partially initialized/removed STA can supply a MAC. */
+	if (!global_idev.netdev_ready || !wiphy ||
+		wiphy != global_idev.pwiphy_global || !global_idev.pwhc_dev ||
+		!global_idev.pndev[0]) {
+		return -ENODEV;
+	}
+
 	if (global_idev.pwdev_global[2] || global_idev.pndev[2]) {
 		dev_info(global_idev.pwhc_dev, "%s: nan_wdev already exists", __func__);
 		return -EBUSY;
@@ -400,6 +414,13 @@ int rtw_nan_iface_alloc(struct wiphy *wiphy,
 		ret = -ENOMEM;
 		goto exit;
 	}
+	/* Do not expose a working NAN interface when firmware initialization
+	 * failed or its USB reply timed out. No wdev owns ndev on this path yet. */
+	ret = whc_host_init_nan();
+	if (ret) {
+		kfree(wdev);
+		goto exit;
+	}
 	wdev->wiphy = global_idev.pwiphy_global;
 	wdev->netdev = ndev;
 	wdev->iftype = NL80211_IFTYPE_NAN;
@@ -410,8 +431,7 @@ int rtw_nan_iface_alloc(struct wiphy *wiphy,
 
 	*nan_wdev = wdev;
 
-	whc_host_init_nan();
-	return ret;
+	return 0;
 
 exit:
 	if (global_idev.pwdev_global[2]) { //wdev
@@ -441,12 +461,17 @@ void rtw_nan_iface_free(struct wiphy *wiphy)
 
 	if (lock_needed) {
 		rtnl_lock();
+		wiphy = global_idev.pwiphy_global;
+		if (!wiphy) {
+			rtnl_unlock();
+			return;
+		}
 		/* NETDEV_GOING_DOWN takes the wiphy mutex itself. Match
 		 * nl80211_del_interface: close before acquiring that mutex. */
 		if (global_idev.pndev[2]) {
 			dev_close(global_idev.pndev[2]);
 		}
-		wiphy_lock(global_idev.pwiphy_global);
+		wiphy_lock(wiphy);
 	}
 	wdev = global_idev.pwdev_global[2];
 	ndev = global_idev.pndev[2];
@@ -475,7 +500,7 @@ void rtw_nan_iface_free(struct wiphy *wiphy)
 
 unlock:
 	if (lock_needed) {
-		wiphy_unlock(global_idev.pwiphy_global);
+		wiphy_unlock(wiphy);
 		rtnl_unlock();
 	}
 }
@@ -576,8 +601,15 @@ void rtw_ndev_unregister(void)
 {
 	int i;
 
+	/* Virtual interfaces may still need their STA parent during teardown. */
+#ifdef CONFIG_NAN
+	rtw_nan_iface_free(NULL);
+#endif
+#ifdef CONFIG_P2P
+	whc_host_p2p_pdwdev_free();
+#endif
 	for (i = 0; i < TOTAL_IFACE_NUM; i++) {
-		if (global_idev.pndev[i] && (global_idev.pndev[i]->reg_state != NETREG_UNREGISTERED)) {
+		if (global_idev.pndev[i] && global_idev.pndev[i]->reg_state == NETREG_REGISTERED) {
 			/* hold rtnl_lock in unregister_netdev. */
 			unregister_netdev(global_idev.pndev[i]);
 		}
@@ -587,7 +619,9 @@ void rtw_ndev_unregister(void)
 			kfree((u8 *)global_idev.pwdev_global[i]);
 			global_idev.pwdev_global[i] = NULL;
 			/* remove wireless_dev in ndev. */
-			global_idev.pndev[i]->ieee80211_ptr = NULL;
+			if (global_idev.pndev[i]) {
+				global_idev.pndev[i]->ieee80211_ptr = NULL;
+			}
 		}
 
 		if (global_idev.pndev[i]) {
@@ -596,12 +630,6 @@ void rtw_ndev_unregister(void)
 		}
 		dev_dbg(global_idev.pwhc_dev, "free netdev %d ok.", i);
 	}
-#ifdef CONFIG_P2P
-	whc_host_p2p_pdwdev_free();
-#endif
-#ifdef CONFIG_NAN
-	rtw_nan_iface_free(NULL);
-#endif
 }
 
 /* Address notifiers receive events for every netdev, including loopback
@@ -714,6 +742,7 @@ void rtw_inetaddr_notifier_unregister(void)
 int rtw_netdev_probe(struct device *pdev)
 {
 	int ret = false;
+	bool host_started = false;
 
 	memset(&global_idev, 0, sizeof(struct whc_device));
 
@@ -733,6 +762,7 @@ int rtw_netdev_probe(struct device *pdev)
 		dev_err(global_idev.pwhc_dev, "wiphy register fail");
 		goto os_ndevs_deinit;
 	}
+	global_idev.wiphy_registered = true;
 #endif
 	/*step4: register netdev */
 	ret = rtw_ndev_alloc();
@@ -742,6 +772,7 @@ int rtw_netdev_probe(struct device *pdev)
 	}
 
 	ret = whc_host_init();
+	host_started = global_idev.host_init_done;
 	if (ret < 0) {
 		dev_err(global_idev.pwhc_dev, "llhw init fail");
 		goto os_ndevs_deinit;
@@ -773,10 +804,19 @@ int rtw_netdev_probe(struct device *pdev)
 #endif /* CONFIG_WHC_HOST_LOG_FWD */
 #endif
 
+	rtnl_lock();
+	global_idev.netdev_ready = true;
+	rtnl_unlock();
 	return 0; /* probe success */
 
 os_ndevs_deinit:
+#ifdef CONFIG_WHC_HCI_USB
+	whc_usb_host_quiesce(&whc_usb_host_priv);
+#endif
 	rtw_ndev_unregister();
+	if (host_started) {
+		whc_host_deinit();
+	}
 #if defined(CONFIG_WHC_WIFI_API_PATH)
 	rtw_wiphy_deinit();
 
@@ -787,16 +827,26 @@ exit:
 
 int rtw_netdev_remove(struct device *pdev)
 {
+	/* add_virtual_intf also owns RTNL. Once this lock is released every new
+	 * request returns -ENODEV, even while this wiphy remains discoverable. */
+	rtnl_lock();
+	global_idev.netdev_ready = false;
+	rtnl_unlock();
+
 	dev_dbg(global_idev.pwhc_dev, "%s start.", __func__);
 
+#ifdef CONFIG_WHC_HCI_USB
+	/* Stop completions and their RX/event consumers before freeing objects
+	 * they can reference. USB removal cannot depend on firmware replies. */
+	whc_usb_host_quiesce(&whc_usb_host_priv);
+#endif
 #if defined(CONFIG_WHC_WIFI_API_PATH)
 	rtw_drv_proc_deinit();
 #endif
 	rtw_ndev_unregister();
+	cancel_work_sync(&whc_netinfo_update_work);
 	dev_dbg(global_idev.pwhc_dev, "unregister netdev done.");
 #if defined(CONFIG_WHC_WIFI_API_PATH)
-	wiphy_unregister(global_idev.pwiphy_global);
-
 	rtw_wiphy_deinit();
 #endif
 	dev_dbg(global_idev.pwhc_dev, "unregister and deinit wiphy done.");

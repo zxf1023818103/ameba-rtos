@@ -16,6 +16,12 @@ static struct wireless_dev *whc_host_add_virtual_intf(struct wiphy *wiphy, const
 	int ret = 0;
 	struct wireless_dev *wdev = NULL;
 
+	/* nl80211 holds RTNL here. Removal closes this gate under the same lock
+	 * before unregistering interfaces; wiphy_unregister() runs only later. */
+	if (!global_idev.netdev_ready || wiphy != global_idev.pwiphy_global) {
+		return ERR_PTR(-ENODEV);
+	}
+
 	dev_info(global_idev.pwhc_dev, "%s: name:%s, type:%d.", __func__, name, type);
 
 	switch (type) {

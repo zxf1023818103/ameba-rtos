@@ -13,7 +13,16 @@
 #define BT_INIC_USB_WAKE_HOST_MAX_WAIT_CNT              10
 #define BT_INIC_USB_WAKE_HOST_UNIT                      10
 
-#define DEV_DMA_ALIGN                   4
+/* USB callbacks run in interrupt context. FreeRTOS heap_5 only suspends
+ * the scheduler, so allocating/freeing there can corrupt a task's heap walk.
+ * Queue bounded packets by value and reclaim TX in USB_BT_TX_THREAD. */
+#define BT_USB_RX_CAPACITY 512U
+struct bt_usb_rx_packet {
+	u32 generation;
+	u16 len;
+	u8 type;
+	u8 data[BT_USB_RX_CAPACITY];
+};
 
 #define USBD_INIC_BT_EP1_INTR_IN_BUF_SIZE               256U   /* BT EP1 INTR IN buffer size */
 #define USBD_INIC_BT_EP2_BULK_IN_BUF_SIZE               512U  /* BT EP2 BULK IN buffer size */
@@ -21,7 +30,11 @@
 
 struct bt_inic_usb_priv {
 	void *rx_queue;
+	void *work_sema;
+	u8 *evt_completed;
+	u8 *acl_completed;
 	u8 rx_req_flag;
+	u8 tx_req_flag;
 	void *evt_tx_lock;
 	void *evt_tx_done_sema;
 	void *acl_tx_lock;
@@ -46,16 +59,22 @@ enum {
 
 static struct bt_inic_usb_priv usb_priv = {0};
 static u8 bt_inic_usb_status = BT_INIC_USB_STATUS_ACTIVE;
+static volatile u8 bt_inic_usb_configured;
+static volatile u32 bt_inic_usb_generation;
 /* INIC Device */
 static usbd_inic_app_t usbd_inic_app;
 
-void bt_inic_usb_tx_data(u8 type, u8 *data, u32 len)
+static void bt_inic_usb_tx_data(u8 type, u8 *data, u32 len)
 {
 	u8 i = 0;
-	if (bt_inic_usb_status == BT_INIC_USB_STATUS_DISABLED) {
-		return;
-	}
+	u8 ep_addr;
+	void *lock, *sema;
+	u32 flags, generation = bt_inic_usb_generation;
+	int ret = HAL_ERR_HW;
 
+	if (!bt_inic_usb_configured || bt_inic_usb_status == BT_INIC_USB_STATUS_DISABLED) {
+		goto drop;
+	}
 	if (bt_inic_usb_status == BT_INIC_USB_STATUS_SUSPEND) {
 		usbd_wake_host();
 		for (i = 0; i < BT_INIC_USB_WAKE_HOST_MAX_WAIT_CNT; i++) {
@@ -64,104 +83,83 @@ void bt_inic_usb_tx_data(u8 type, u8 *data, u32 len)
 				break;
 			}
 		}
+		if (i == BT_INIC_USB_WAKE_HOST_MAX_WAIT_CNT) {
+			goto drop;
+		}
 	}
-
-	if (i == BT_INIC_USB_WAKE_HOST_MAX_WAIT_CNT) {
-		return;
-	}
-
-	switch (type) {
-	case HCI_EVT:
+	if (type == HCI_EVT) {
 		BT_DUMPA("HOST RX EVT: ", data, len);
-		osif_mutex_take(usb_priv.evt_tx_lock, BT_TIMEOUT_FOREVER);
-		osif_sem_take(usb_priv.evt_tx_done_sema, BT_TIMEOUT_FOREVER);
-
-		usbd_whc_transmit_data(USBD_WHC_BT_EP_INTR_IN, data, len, NULL);
-		osif_mutex_give(usb_priv.evt_tx_lock);
-		break;
-	case HCI_ACL:
+		lock = usb_priv.evt_tx_lock;
+		sema = usb_priv.evt_tx_done_sema;
+		ep_addr = USBD_WHC_BT_EP_INTR_IN;
+	} else if (type == HCI_ACL) {
 		BT_DUMPA("HOST RX ACL: ", data, len);
-		osif_mutex_take(usb_priv.acl_tx_lock, BT_TIMEOUT_FOREVER);
-		osif_sem_take(usb_priv.acl_tx_done_sema, BT_TIMEOUT_FOREVER);
-
-		usbd_whc_transmit_data(USBD_WHC_BT_EP_BULK_IN, data, len, NULL);
-		osif_mutex_give(usb_priv.acl_tx_lock);
-		break;
-	default:
-		break;
+		lock = usb_priv.acl_tx_lock;
+		sema = usb_priv.acl_tx_done_sema;
+		ep_addr = USBD_WHC_BT_EP_BULK_IN;
+	} else {
+		goto drop;
 	}
-
+	osif_mutex_take(lock, BT_TIMEOUT_FOREVER);
+	osif_sem_take(sema, BT_TIMEOUT_FOREVER);
+	flags = osif_lock();
+	if (bt_inic_usb_configured && generation == bt_inic_usb_generation) {
+		ret = usbd_whc_transmit_data(ep_addr, data, len, NULL);
+	}
+	osif_unlock(flags);
+	if (ret != HAL_OK) {
+		/* A rejected submission has no completion to release this token. */
+		osif_sem_give(sema);
+	}
+	osif_mutex_give(lock);
+	if (ret == HAL_OK) {
+		return; /* completion/cancellation owns data */
+	}
+drop:
+	osif_mem_free(data);
 }
 
 void bt_inic_send_to_host(u8 type, u8 *pdata, u32 len)
 {
 	u8 *buf = NULL;
-	u8 *data;
 
-	buf = osif_mem_alloc(RAM_TYPE_DATA_ON, len + DEV_DMA_ALIGN);
+	buf = osif_mem_alloc(RAM_TYPE_DATA_ON, len);
 	if (!(buf)) {
 		return;
 	}
-	data = (u8 *)N_BYTE_ALIGMENT((u32)buf, DEV_DMA_ALIGN);
-	memcpy(data, pdata, len);//BLE Packet data
-
-	bt_inic_usb_tx_data(type, data, len);
+	memcpy(buf, pdata, len);
+	bt_inic_usb_tx_data(type, buf, len);
 	return;
+}
+
+static int bt_inic_usb_queue_rx(u8 type, const u8 *buf, u16 len)
+{
+	struct bt_usb_rx_packet packet;
+	if (!buf || len > sizeof(packet.data)) {
+		return HAL_ERR_PARA;
+	}
+	if (!bt_inic_usb_configured || !usb_priv.rx_queue) {
+		return HAL_ERR_HW;
+	}
+	packet.generation = bt_inic_usb_generation;
+	packet.len = len;
+	packet.type = type;
+	memcpy(packet.data, buf, len);
+	if (!osif_msg_send(usb_priv.rx_queue, &packet, BT_TIMEOUT_NONE)) {
+		return HAL_BUSY;
+	}
+	return HAL_OK;
 }
 
 int bt_inic_usb_hci_cmd_hdl(u8 *buf, u16 len)
 {
-	u8 *rx_cmd;
-
-	if (buf == NULL) {
-		return HAL_ERR_PARA;
-	}
-
-	BT_DUMPA("HOST TX CMD: ", buf, len);
-
-	rx_cmd = (u8 *)osif_mem_alloc(RAM_TYPE_DATA_ON, len + 3);
-	if (!rx_cmd) {
-		BT_LOGE("Alloc memory failed\n");
-		return HAL_ERR_MEM;
-	}
-
-	rx_cmd[0] = len & 0xff; /* Packet Length */
-	rx_cmd[1] = (len >> 8) & 0xff;
-	rx_cmd[2] = HCI_CMD;
-
-	memcpy(rx_cmd + 3, buf, len);
-	osif_msg_send(usb_priv.rx_queue, &rx_cmd, BT_TIMEOUT_NONE);
-
-	return HAL_OK;
+	return bt_inic_usb_queue_rx(HCI_CMD, buf, len);
 }
 
 int bt_inic_usb_hci_acl_hdl(u8 *buf, u16 len)
 {
-	u8 *rx_acl;
-
-	if (buf == NULL) {
-		return HAL_ERR_PARA;
-	}
-
-	BT_DUMPA("HOST TX ACL: ", buf, len);
-
-	rx_acl = (u8 *)osif_mem_alloc(RAM_TYPE_DATA_ON, len + 3);
-	if (!rx_acl) {
-		BT_LOGE("Alloc memory failed\n");
-		return HAL_ERR_MEM;
-	}
-
-	rx_acl[0] = len & 0xff; /* Packet Length */
-	rx_acl[1] = (len >> 8) & 0xff;
-	rx_acl[2] = HCI_ACL;
-
-	memcpy(rx_acl + 3, buf, len);
-	osif_msg_send(usb_priv.rx_queue, &rx_acl, BT_TIMEOUT_NONE);
-
-	return HAL_OK;
+	return bt_inic_usb_queue_rx(HCI_ACL, buf, len);
 }
-
-
 
 void bt_inic_status_change_cb(u8 old_status, u8 status)
 {
@@ -177,20 +175,48 @@ void bt_inic_status_change_cb(u8 old_status, u8 status)
 	}
 }
 
+static void bt_inic_usb_reclaim_tx(void)
+{
+	u32 flags = osif_lock();
+	u8 *evt = usb_priv.evt_completed;
+	u8 *acl = usb_priv.acl_completed;
+	usb_priv.evt_completed = NULL;
+	usb_priv.acl_completed = NULL;
+	osif_unlock(flags);
+	if (evt) {
+		osif_mem_free(evt);
+		osif_sem_give(usb_priv.evt_tx_done_sema);
+	}
+	if (acl) {
+		osif_mem_free(acl);
+		osif_sem_give(usb_priv.acl_tx_done_sema);
+	}
+}
+
+static void _usb_tx_complete_thread(void *param)
+{
+	(void)param;
+	for (;;) {
+		osif_sem_take(usb_priv.work_sema, BT_TIMEOUT_FOREVER);
+		bt_inic_usb_reclaim_tx();
+		if (usb_priv.tx_req_flag != USB_RUNNING) {
+			break;
+		}
+	}
+	usb_priv.tx_req_flag = USB_CLOSED;
+	osif_task_delete(NULL);
+}
+
 static void _usb_rx_thread(void *pData)
 {
 	(void)pData;
-	uint8_t *buf;
-	uint16_t pkt_len;
-	while (osif_msg_recv(usb_priv.rx_queue, &buf, BT_TIMEOUT_FOREVER)) {
+	struct bt_usb_rx_packet packet;
+	while (osif_msg_recv(usb_priv.rx_queue, &packet, BT_TIMEOUT_FOREVER)) {
 		if (usb_priv.rx_req_flag != USB_RUNNING) {
 			break;
 		}
-
-		if (buf) {
-			pkt_len = *((u16 *)buf);
-			bt_inic_recv_from_host(*(buf + 2), buf + 3, pkt_len);
-			osif_mem_free(buf);
+		if (bt_inic_usb_configured && packet.generation == bt_inic_usb_generation) {
+			bt_inic_recv_from_host(packet.type, packet.data, packet.len);
 		}
 	}
 	usb_priv.rx_req_flag = USB_CLOSED;
@@ -199,30 +225,50 @@ static void _usb_rx_thread(void *pData)
 
 static bool _usb_rx_queue_init(void)
 {
-	osif_msg_queue_create(&usb_priv.rx_queue, 32, sizeof(u8 *));
-
-	usb_priv.rx_req_flag = USB_RUNNING;
-	if (!osif_task_create(NULL, "USB_BT_RX_THREAD", _usb_rx_thread, (void *)(&usb_priv), 1024 * 4, 7)) {
-		BT_LOGE("Create USB_RX_THREAD Err!!\n");
+	if (!osif_msg_queue_create(&usb_priv.rx_queue, 32, sizeof(struct bt_usb_rx_packet))) {
 		return FALSE;
 	}
-
+	if (!osif_sem_create(&usb_priv.work_sema, 0, 0xFFFFFFFF)) {
+		osif_msg_queue_delete(usb_priv.rx_queue);
+		usb_priv.rx_queue = NULL;
+		return FALSE;
+	}
+	usb_priv.tx_req_flag = USB_RUNNING;
+	if (!osif_task_create(NULL, "USB_BT_TX_THREAD", _usb_tx_complete_thread, NULL, 2048, 7)) {
+		usb_priv.tx_req_flag = USB_CLOSED;
+		goto fail;
+	}
+	usb_priv.rx_req_flag = USB_RUNNING;
+	if (!osif_task_create(NULL, "USB_BT_RX_THREAD", _usb_rx_thread, NULL, 1024 * 4, 7)) {
+		usb_priv.rx_req_flag = USB_CLOSED;
+		usb_priv.tx_req_flag = USB_CLOSING;
+		osif_sem_give(usb_priv.work_sema);
+		while (usb_priv.tx_req_flag != USB_CLOSED) osif_delay(1);
+		goto fail;
+	}
 	return TRUE;
+fail:
+	osif_sem_delete(usb_priv.work_sema);
+	osif_msg_queue_delete(usb_priv.rx_queue);
+	usb_priv.work_sema = NULL;
+	usb_priv.rx_queue = NULL;
+	return FALSE;
 }
 
 static void _usb_rx_queue_deinit(void)
 {
-	uint8_t *buf = NULL;
-
+	struct bt_usb_rx_packet packet = {0};
+	bt_inic_clear_config();
 	usb_priv.rx_req_flag = USB_CLOSING;
-	osif_msg_send(usb_priv.rx_queue, &buf, BT_TIMEOUT_FOREVER);
-
-	while (usb_priv.rx_req_flag != USB_CLOSED) {
-		osif_delay(5);
-	}
-
+	osif_msg_send(usb_priv.rx_queue, &packet, BT_TIMEOUT_FOREVER);
+	while (usb_priv.rx_req_flag != USB_CLOSED) osif_delay(5);
+	usb_priv.tx_req_flag = USB_CLOSING;
+	osif_sem_give(usb_priv.work_sema);
+	while (usb_priv.tx_req_flag != USB_CLOSED) osif_delay(5);
 	osif_msg_queue_delete(usb_priv.rx_queue);
+	osif_sem_delete(usb_priv.work_sema);
 	usb_priv.rx_queue = NULL;
+	usb_priv.work_sema = NULL;
 }
 
 static int _usb_trx_buf_init(void)
@@ -301,14 +347,14 @@ static void _usb_trx_buf_deinit(void)
 
 void bt_inic_usb_evt_txdone_cb(u8 *buf)
 {
-	osif_mem_free(buf);
-	osif_sem_give(usb_priv.evt_tx_done_sema);
+	usb_priv.evt_completed = buf;
+	osif_sem_give(usb_priv.work_sema);
 }
 
 void bt_inic_usb_acl_txdone_cb(u8 *buf)
 {
-	osif_mem_free(buf);
-	osif_sem_give(usb_priv.acl_tx_done_sema);
+	usb_priv.acl_completed = buf;
+	osif_sem_give(usb_priv.work_sema);
 }
 
 #if defined(CONFIG_AMEBAGREEN2) && CONFIG_AMEBAGREEN2 && defined(CONFIG_WHC_INTF_USB) && CONFIG_WHC_INTF_USB
@@ -329,7 +375,11 @@ int bt_inic_usb_init(void)
 		goto init_exit;
 	}
 
-	_usb_rx_queue_init();
+	if (!_usb_rx_queue_init()) {
+		_usb_trx_buf_deinit();
+		ret = HAL_ERR_MEM;
+		goto init_exit;
+	}
 	osif_mutex_create(&usb_priv.evt_tx_lock);
 	osif_mutex_create(&usb_priv.acl_tx_lock);
 	osif_sem_create(&usb_priv.evt_tx_done_sema, 0, 1);
@@ -363,6 +413,13 @@ void bt_inic_usb_deinit(void)
 	BT_LOGA("USB device deinit done!\n");
 }
 
+void bt_inic_clear_config(void)
+{
+	/* Called after the class cancels IN transfers and releases their tokens. */
+	bt_inic_usb_configured = 0;
+	bt_inic_usb_generation++;
+}
+
 void bt_inic_set_config(void)
 {
 	usbd_inic_app_t *iapp = &usbd_inic_app;
@@ -370,6 +427,8 @@ void bt_inic_set_config(void)
 	// Prepare to RX
 
 	if (usbd_whc_is_bt_en()) {
+		bt_inic_usb_generation++;
+		bt_inic_usb_configured = 1;
 		ep = &iapp->out_ep[USB_EP_NUM(USBD_WHC_BT_EP_BULK_OUT)];
 		usbd_whc_receive_data(USBD_WHC_BT_EP_BULK_OUT, ep->buf, ep->buf_len, NULL);
 	}

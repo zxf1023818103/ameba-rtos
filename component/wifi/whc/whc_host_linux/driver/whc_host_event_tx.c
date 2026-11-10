@@ -80,7 +80,7 @@ int whc_host_send_event(u32 id, u8 *param, u32 param_len, u8 *ret, u32 ret_len)
 	spin_unlock(&event_priv->api_ret_lock);
 
 	if (wait_ret == 0) {
-		dev_err(global_idev.pwhc_dev, "wait ret value timeout!!\n");
+		dev_err(global_idev.pwhc_dev, "Host API 0x%x response timeout\n", id);
 		status = -ETIMEDOUT;
 		goto exit;
 	}
@@ -141,9 +141,8 @@ int whc_host_set_user_config(struct wifi_user_conf *pwifi_usrcfg)
 	size = sizeof(struct wifi_user_conf);
 	param_buf[0] = 0;
 
-	whc_host_send_event(WHC_API_WIFI_SET_USR_CFG, (u8 *)param_buf, sizeof(param_buf), (u8 *)pwifi_usrcfg, size);
-
-	return 0;
+	return whc_host_send_event(WHC_API_WIFI_SET_USR_CFG, (u8 *)param_buf,
+							  sizeof(param_buf), (u8 *)pwifi_usrcfg, size);
 }
 
 void whc_host_wifi_on(void)
@@ -647,39 +646,43 @@ u64 whc_host_get_tsft(u8 iface_type)
 int whc_host_init_nan(void)
 {
 	int ret = 0;
+	int status;
 
-	whc_host_send_event(WHC_API_NAN_INIT, NULL, 0, (u8 *)&ret, sizeof(int));
-	return ret;
+	status = whc_host_send_event(WHC_API_NAN_INIT, NULL, 0, (u8 *)&ret, sizeof(int));
+	return status ? status : ret;
 }
 
 int whc_host_deinit_nan(void)
 {
 	int ret = 0;
+	int status;
 
-	whc_host_send_event(WHC_API_NAN_DEINIT, NULL, 0, (u8 *)&ret, sizeof(int));
-	return ret;
+	status = whc_host_send_event(WHC_API_NAN_DEINIT, NULL, 0, (u8 *)&ret, sizeof(int));
+	return status ? status : ret;
 }
 
 int whc_host_start_nan(u8 master_pref, u8 band_support)
 {
 	int ret = 0;
+	int status;
 	u32 param_buf[2];
 
 	param_buf[0] = (u32)master_pref;
 	param_buf[1] = (u32)band_support;
 
-	whc_host_send_event(WHC_API_NAN_START, (u8 *)param_buf, sizeof(param_buf), (u8 *)&ret, sizeof(int));
+	status = whc_host_send_event(WHC_API_NAN_START, (u8 *)param_buf, sizeof(param_buf), (u8 *)&ret, sizeof(int));
 
-	return ret;
+	return status ? status : ret;
 }
 
 int whc_host_stop_nan(void)
 {
 	int ret = 0;
+	int status;
 
-	whc_host_send_event(WHC_API_NAN_STOP, NULL, 0, (u8 *)&ret, sizeof(int));
+	status = whc_host_send_event(WHC_API_NAN_STOP, NULL, 0, (u8 *)&ret, sizeof(int));
 
-	return ret;
+	return status ? status : ret;
 }
 
 int whc_host_add_nan_func(struct rtw_nan_func_t *func, void *nan_func_pointer)

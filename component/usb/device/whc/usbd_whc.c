@@ -1246,6 +1246,19 @@ clean_wifi_config_exit:
 	return ret;
 }
 
+/* Deconfiguration cancels transfers without a normal data_in callback.
+ * Return ownership to the application only after DMA has been stopped. */
+static void usbd_whc_deinit_ep(usb_dev_t *dev, usbd_ep_t *ep)
+{
+	usbd_whc_dev_t *idev = &usbd_whc_dev;
+	u8 pending = USB_EP_IS_IN(ep->info.addr) && ep->xfer_state == USBD_WHC_EP_STATE_BUSY;
+	ep->xfer_state = USBD_WHC_EP_STATE_IDLE;
+	usbd_ep_deinit(dev, ep);
+	if (pending && idev->cb && idev->cb->transmitted) {
+		idev->cb->transmitted(&idev->in_ep[USB_EP_NUM(ep->info.addr)], HAL_ERR_HW);
+	}
+}
+
 /**
   * @brief  Clear class configuration for WiFi interface
   * @param  dev: USB device instance
@@ -1261,23 +1274,19 @@ static int usbd_whc_clear_wifi_config(usb_dev_t *dev, u8 config)
 
 	/* DeInit WiFi BULK IN */
 	ep = &idev->in_ep[USB_EP_NUM(USBD_WHC_WIFI_EP_BULK_IN)].ep;
-	ep->xfer_state = USBD_WHC_EP_STATE_IDLE;
-	usbd_ep_deinit(dev, ep);
+	usbd_whc_deinit_ep(dev, ep);
 
 	/* DeInit WiFi BULK OUT 1 */
 	ep = &idev->out_ep[USB_EP_NUM(USBD_WHC_WIFI_EP_BULK_OUT_1)].ep;
-	ep->xfer_state = USBD_WHC_EP_STATE_IDLE;
-	usbd_ep_deinit(dev, ep);
+	usbd_whc_deinit_ep(dev, ep);
 
 	/* DeInit WiFi BULK OUT 2 */
 	ep = &idev->out_ep[USB_EP_NUM(USBD_WHC_WIFI_EP_BULK_OUT_2)].ep;
-	ep->xfer_state = USBD_WHC_EP_STATE_IDLE;
-	usbd_ep_deinit(dev, ep);
+	usbd_whc_deinit_ep(dev, ep);
 
 	/* DeInit WiFi BULK OUT 3 */
 	ep = &idev->out_ep[USB_EP_NUM(USBD_WHC_WIFI_EP_BULK_OUT_3)].ep;
-	ep->xfer_state = USBD_WHC_EP_STATE_IDLE;
-	usbd_ep_deinit(dev, ep);
+	usbd_whc_deinit_ep(dev, ep);
 
 	return HAL_OK;
 }
@@ -1298,13 +1307,11 @@ static int usbd_whc_clear_eth_config(usb_dev_t *dev, u8 config)
 
 	/* DeInit Ethernet BULK IN */
 	ep = &idev->in_ep[USB_EP_NUM(USBD_WHC_ETH_EP_BULK_IN)].ep;
-	ep->xfer_state = USBD_WHC_EP_STATE_IDLE;
-	usbd_ep_deinit(dev, ep);
+	usbd_whc_deinit_ep(dev, ep);
 
 	/* DeInit Ethernet BULK OUT */
 	ep = &idev->out_ep[USB_EP_NUM(USBD_WHC_ETH_EP_BULK_OUT)].ep;
-	ep->xfer_state = USBD_WHC_EP_STATE_IDLE;
-	usbd_ep_deinit(dev, ep);
+	usbd_whc_deinit_ep(dev, ep);
 
 	return HAL_OK;
 }
@@ -1325,18 +1332,15 @@ static int usbd_whc_clear_bt_config(usb_dev_t *dev, u8 config)
 
 	/* DeInit BT INTR IN */
 	ep = &idev->in_ep[USB_EP_NUM(USBD_WHC_BT_EP_INTR_IN)].ep;
-	ep->xfer_state = USBD_WHC_EP_STATE_IDLE;
-	usbd_ep_deinit(dev, ep);
+	usbd_whc_deinit_ep(dev, ep);
 
 	/* DeInit BT BULK IN */
 	ep = &idev->in_ep[USB_EP_NUM(USBD_WHC_BT_EP_BULK_IN)].ep;
-	ep->xfer_state = USBD_WHC_EP_STATE_IDLE;
-	usbd_ep_deinit(dev, ep);
+	usbd_whc_deinit_ep(dev, ep);
 
 	/* DeInit BT BULK OUT */
 	ep = &idev->out_ep[USB_EP_NUM(USBD_WHC_BT_EP_BULK_OUT)].ep;
-	ep->xfer_state = USBD_WHC_EP_STATE_IDLE;
-	usbd_ep_deinit(dev, ep);
+	usbd_whc_deinit_ep(dev, ep);
 
 	return HAL_OK;
 }
@@ -1647,6 +1651,12 @@ static int usbd_whc_handle_ep_data_in(usb_dev_t *dev, u8 ep_addr, u8 status)
 
 	in_ep = &idev->in_ep[ep_num];
 	ep = &in_ep->ep;
+
+	/* clear_config may already have cancelled this transfer and returned
+	 * its buffer. A pending completion must not return ownership twice. */
+	if (ep->xfer_state != USBD_WHC_EP_STATE_BUSY) {
+		return HAL_OK;
+	}
 
 	if (status != HAL_OK) {
 		USB_DIAG(USB_LAYER_CLASS, USB_EVT_ERR_XFER, ep_addr);
@@ -2225,7 +2235,8 @@ int usbd_whc_transmit_data(u8 ep_addr, u8 *buf, u32 len, void *userdata)
 		}
 		if (ret == HAL_OK) {
 			ret = usbd_ep_transmit(dev, ep);
-		} else {
+		}
+		if (ret != HAL_OK) {
 			/* Every failure path returns before the endpoint is enabled, so no completion
 			 * interrupt will ever release the EP: release it here or it stays BUSY forever */
 			ep->xfer_state = USBD_WHC_EP_STATE_IDLE;

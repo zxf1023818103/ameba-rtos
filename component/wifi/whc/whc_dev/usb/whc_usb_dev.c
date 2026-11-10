@@ -6,7 +6,10 @@
 #endif
 
 struct whc_usb_priv_t whc_usb_priv = {0};
-static u8 whc_usb_configured;
+static volatile u8 whc_usb_configured;
+static volatile u8 whc_usb_reconfigure;
+static volatile u8 whc_usb_should_configure;
+static volatile u32 whc_usb_generation;
 
 #ifdef GREEN2_NAN_USB_RX_RESERVE
 #include "whc_dev_nan_usb_control.h"
@@ -60,6 +63,9 @@ static int whc_usb_dev_rx_done_cb(usbd_whc_ep_t *out_ep, u32 len)
 	usb_ep_info_t *info = &out_ep->ep.info;
 	if (info->addr == WIFI_WHC_USB_BULKOUT_1 || info->addr == WIFI_WHC_USB_BULKOUT_2
 		|| info->addr == WIFI_WHC_USB_BULKOUT_3) {
+		if (!whc_usb_configured) {
+			return RTK_SUCCESS;
+		}
 		if ((whc_usb_priv.irq_info.rxdone_epnum[whc_usb_priv.irq_info.intr_widx] == 0) &&
 			(whc_usb_priv.irq_info.len[whc_usb_priv.irq_info.intr_widx] == 0)) {
 			whc_usb_priv.irq_info.rxdone_epnum[whc_usb_priv.irq_info.intr_widx] = info->addr;
@@ -206,8 +212,10 @@ static void whch_usb_dev_txagg_rx_handle(void)
 	u32 event;
 	u16 len;
 	u8 ep_num;
+	u32 generation = whc_usb_generation;
 
-	while ((whc_usb_priv.irq_info.rxdone_epnum[whc_usb_priv.irq_info.task_ridx] != 0) &&
+	while (whc_usb_configured && generation == whc_usb_generation &&
+		   (whc_usb_priv.irq_info.rxdone_epnum[whc_usb_priv.irq_info.task_ridx] != 0) &&
 		   (whc_usb_priv.irq_info.len[whc_usb_priv.irq_info.task_ridx] != 0)) {
 		struct whch_buff *buff;
 		struct whch_buff *new_buff;
@@ -255,21 +263,66 @@ static void whch_usb_dev_txagg_rx_handle(void)
 		whc_usb_priv.cur_rxbuff[ep_idx] = new_buff;
 		new_buff->status = 0;
 		new_buff->agg_num = 0;
-		usbd_whc_receive_data(EPIDX_TO_NUM(ep_idx), new_buff->buf, USB_BUFSZ, NULL);
+		rtos_critical_enter(RTOS_CRITICAL_USB);
+		if (whc_usb_configured && generation == whc_usb_generation) {
+			usbd_whc_receive_data(EPIDX_TO_NUM(ep_idx), new_buff->buf, USB_BUFSZ, NULL);
+		}
+		rtos_critical_exit(RTOS_CRITICAL_USB);
 	}
 
 	for (u8 i = 0; i < WIFI_WHC_USB_BULKOUT_EP_NUM; i++) {
-		if (!whc_usb_priv.cur_rxbuff[i]) {
+		if (whc_usb_configured && generation == whc_usb_generation && !whc_usb_priv.cur_rxbuff[i]) {
 			whch_usb_dev_txagg_config_rxbuf(i);
 		}
 	}
 }
 #endif /* WHCH_TXAGG */
 
+/* SET_CONFIGURATION/clear_config run in the USB ISR. The IRQ worker owns
+ * the RX buffers: let an interrupted RX dispatch finish transferring skb
+ * ownership before clearing the ring and rearming the new configuration.
+ * Reusing these buffers also avoids leaking one skb per OUT EP per reconnect.
+ */
+static void whc_usb_dev_apply_config(void)
+{
+	u8 i;
+	rtos_critical_enter(RTOS_CRITICAL_USB);
+	if (!whc_usb_reconfigure) {
+		rtos_critical_exit(RTOS_CRITICAL_USB);
+		return;
+	}
+	whc_usb_reconfigure = 0;
+	memset(whc_usb_priv.irq_info.rxdone_epnum, 0, sizeof(whc_usb_priv.irq_info.rxdone_epnum));
+	memset(whc_usb_priv.irq_info.len, 0, sizeof(whc_usb_priv.irq_info.len));
+	whc_usb_priv.irq_info.intr_widx = 0;
+	whc_usb_priv.irq_info.task_ridx = 0;
+	whc_usb_priv.irq_info.wait_xmit_skb = 0;
+	if (whc_usb_should_configure) {
+		for (i = 0; i < WIFI_WHC_USB_BULKOUT_EP_NUM; i++) {
+#ifdef WHCH_TXAGG
+			struct whch_buff *buff = whc_usb_priv.cur_rxbuff[i];
+			if (buff) {
+				buff->status = 0;
+				buff->agg_num = 0;
+				usbd_whc_receive_data(EPIDX_TO_NUM(i), buff->buf, USB_BUFSZ, NULL);
+			} else {
+				whch_usb_dev_txagg_config_rxbuf(i);
+			}
+#else
+			struct sk_buff *skb = (struct sk_buff *)whc_usb_priv.rx_skb_addr[i];
+			usbd_whc_receive_data(EPIDX_TO_NUM(i), skb->data, USB_BUFSZ, NULL);
+#endif
+		}
+		whc_usb_configured = 1;
+	}
+	rtos_critical_exit(RTOS_CRITICAL_USB);
+}
+
 static void whc_usb_dev_irq_task(void)
 {
 	struct whc_txbuf_info_t *whc_txbuf;
 #ifndef WHCH_TXAGG
+	u32 generation;
 	struct sk_buff *new_skb = NULL;
 	struct sk_buff *skb_rcv = NULL;
 	struct whc_msg_info *msg_info;
@@ -280,19 +333,28 @@ static void whc_usb_dev_irq_task(void)
 	do {
 		rtos_sema_take(whc_usb_priv.usb_irq_sema, MUTEX_WAIT_TIMEOUT);
 		// tx callback
+		whc_txbuf = NULL;
+		rtos_critical_enter(RTOS_CRITICAL_USB);
 		if (whc_usb_priv.irq_info.txdone != 0) {
 			whc_txbuf = (struct whc_txbuf_info_t *)whc_usb_priv.tx_buf;
-
-			whc_dev_free_txbuf(whc_txbuf);
 			whc_usb_priv.irq_info.txdone = 0;  // clear tx done flag
 			whc_usb_priv.tx_buf = NULL;
+		}
+		rtos_critical_exit(RTOS_CRITICAL_USB);
+		if (whc_txbuf) {
+			whc_dev_free_txbuf(whc_txbuf);
 			rtos_sema_give(whc_usb_priv.usb_tx_sema);
 		}
+		whc_usb_dev_apply_config();
+#ifndef WHCH_TXAGG
+		generation = whc_usb_generation;
+#endif
 		//rx callback
 #ifdef WHCH_TXAGG
 		whch_usb_dev_txagg_rx_handle();
 #else
-		while ((whc_usb_priv.irq_info.rxdone_epnum[whc_usb_priv.irq_info.task_ridx] != 0) &&
+		while (whc_usb_configured && generation == whc_usb_generation &&
+			   (whc_usb_priv.irq_info.rxdone_epnum[whc_usb_priv.irq_info.task_ridx] != 0) &&
 			   (whc_usb_priv.irq_info.len[whc_usb_priv.irq_info.task_ridx] != 0)) {
 
 			ep_num = whc_usb_priv.irq_info.rxdone_epnum[whc_usb_priv.irq_info.task_ridx];
@@ -345,7 +407,11 @@ rearm_rx:
 			whc_usb_priv.irq_info.rxdone_epnum[whc_usb_priv.irq_info.task_ridx] = 0;
 			whc_usb_priv.irq_info.len[whc_usb_priv.irq_info.task_ridx] = 0;
 			whc_usb_priv.irq_info.task_ridx = (whc_usb_priv.irq_info.task_ridx + 1) % (WIFI_WHC_USB_BULKOUT_EP_NUM);
-			usbd_whc_receive_data(ep_num, new_skb->data, USB_BUFSZ, NULL); //need config usb buffer after clear rxdone_epnum list
+			rtos_critical_enter(RTOS_CRITICAL_USB);
+			if (whc_usb_configured && generation == whc_usb_generation) {
+				usbd_whc_receive_data(ep_num, new_skb->data, USB_BUFSZ, NULL);
+			}
+			rtos_critical_exit(RTOS_CRITICAL_USB);
 		}
 #endif
 
@@ -406,42 +472,51 @@ void whc_usb_dev_status_changed_cb(u8 old_status, u8 new_status)
 #endif
 }
 
+/* Endpoints have already been stopped by the class before clear_config.
+ * Cancelled IN transfers do not get a completion callback from the USB core.
+ * Wake the worker to retire their buffer and release the one TX token. */
+static void whc_usb_dev_request_config(u8 configure)
+{
+	rtos_critical_enter(RTOS_CRITICAL_USB);
+	whc_usb_configured = 0;
+	whc_usb_generation++;
+	whc_usb_should_configure = configure;
+	whc_usb_reconfigure = 1;
+	if (whc_usb_priv.tx_buf) {
+		whc_usb_priv.irq_info.txdone = 1;
+	}
+	rtos_critical_exit(RTOS_CRITICAL_USB);
+	rtos_sema_give(whc_usb_priv.usb_irq_sema);
+}
+
 int whc_usb_dev_rxbuf_config_cb(void)
 {
-#ifdef WHCH_TXAGG
-	for (u8 i = 0; i < WIFI_WHC_USB_BULKOUT_EP_NUM; i++) {
-		whch_usb_dev_txagg_config_rxbuf(i);
-	}
-#else
-	struct sk_buff *skb_new = NULL;
-
-	skb_new = dev_alloc_skb(USB_BUFSZ, USB_SKB_RSVD_LEN);
-	whc_usb_priv.rx_skb_addr[EPNUM_TO_IDX(WIFI_WHC_USB_BULKOUT_1)] = (u8 *)skb_new;
-	usbd_whc_receive_data(WIFI_WHC_USB_BULKOUT_1, skb_new->data, USB_BUFSZ, NULL);
-
-	skb_new = dev_alloc_skb(USB_BUFSZ, USB_SKB_RSVD_LEN);
-	whc_usb_priv.rx_skb_addr[EPNUM_TO_IDX(WIFI_WHC_USB_BULKOUT_2)] = (u8 *)skb_new;
-	usbd_whc_receive_data(WIFI_WHC_USB_BULKOUT_2, skb_new->data, USB_BUFSZ, NULL);
-
-	if (WIFI_WHC_USB_BULKOUT_EP_NUM == 3) {
-		skb_new = dev_alloc_skb(USB_BUFSZ, USB_SKB_RSVD_LEN);
-		whc_usb_priv.rx_skb_addr[EPNUM_TO_IDX(WIFI_WHC_USB_BULKOUT_3)] = (u8 *)skb_new;
-		usbd_whc_receive_data(WIFI_WHC_USB_BULKOUT_3, skb_new->data, USB_BUFSZ, NULL);
-	}
-#endif
-
+	whc_usb_dev_request_config(1);
 #if defined(CONFIG_BT) && defined(CONFIG_BT_INIC_USB)
 	bt_inic_set_config();
 #endif
-	whc_usb_configured = 1;
-	return 0;
+	return HAL_OK;
 }
 
 static int whc_usb_dev_init_cb(void)
 {
 	int ret = HAL_OK;
 
-	// wifi use skb, not need to malloc buffer
+#ifndef WHCH_TXAGG
+	/* Allocate once in task context, before enumeration can enable DMA. */
+	for (u8 i = 0; i < WIFI_WHC_USB_BULKOUT_EP_NUM; i++) {
+		struct sk_buff *skb = dev_alloc_skb(USB_BUFSZ, USB_SKB_RSVD_LEN);
+		if (!skb) {
+			while (i) {
+				i--;
+				dev_kfree_skb_any((struct sk_buff *)whc_usb_priv.rx_skb_addr[i]);
+				whc_usb_priv.rx_skb_addr[i] = NULL;
+			}
+			return HAL_ERR_MEM;
+		}
+		whc_usb_priv.rx_skb_addr[i] = (u8 *)skb;
+	}
+#endif
 
 #ifdef WHCH_TXAGG
 	if (whch_usb_dev_txagg_pool_init() != 0) {
@@ -549,7 +624,10 @@ static int whc_usb_dev_setup_cb(usb_setup_req_t *req, u8 *buf)
 
 static int whc_usb_dev_clear_config_cb(void)
 {
-	whc_usb_configured = 0;
+	whc_usb_dev_request_config(0);
+#if defined(CONFIG_BT) && defined(CONFIG_BT_INIC_USB)
+	bt_inic_clear_config();
+#endif
 	return HAL_OK;
 }
 
@@ -656,6 +734,8 @@ void whc_usb_dev_init(void)
 void whc_usb_dev_send(u8 *buf, u16 len, void *buf_alloc, u8 is_skb)
 {
 	int i = 0;
+	int ret;
+	u32 generation = whc_usb_generation;
 	struct whc_txbuf_info_t *buf_info = NULL;
 	struct whc_buf_info *pbuf;
 
@@ -687,9 +767,20 @@ void whc_usb_dev_send(u8 *buf, u16 len, void *buf_alloc, u8 is_skb)
 	rtos_mutex_take(whc_usb_priv.tx_lock, MUTEX_WAIT_TIMEOUT);
 
 	rtos_sema_take(whc_usb_priv.usb_tx_sema, MUTEX_WAIT_TIMEOUT);
-	whc_usb_priv.tx_buf = (u8 *)buf_info;
-	if (usbd_whc_transmit_data((u8)WIFI_WHC_USB_BULKIN_EP, (u8 *)pbuf->buf_addr, (u16)pbuf->buf_size, NULL) != 0) {
-		whc_usb_priv.tx_buf = NULL;
+	/* clear_config can run while either wait above blocks. Do not submit
+	 * a previous session's event into the newly configured endpoint. */
+	rtos_critical_enter(RTOS_CRITICAL_USB);
+	ret = HAL_ERR_HW;
+	if (whc_usb_configured && generation == whc_usb_generation) {
+		whc_usb_priv.tx_buf = (u8 *)buf_info;
+		ret = usbd_whc_transmit_data((u8)WIFI_WHC_USB_BULKIN_EP,
+									(u8 *)pbuf->buf_addr, (u16)pbuf->buf_size, NULL);
+		if (ret != HAL_OK) {
+			whc_usb_priv.tx_buf = NULL;
+		}
+	}
+	rtos_critical_exit(RTOS_CRITICAL_USB);
+	if (ret != HAL_OK) {
 		rtos_sema_give(whc_usb_priv.usb_tx_sema);
 		rtos_mutex_give(whc_usb_priv.tx_lock);
 		goto drop;
@@ -700,7 +791,11 @@ void whc_usb_dev_send(u8 *buf, u16 len, void *buf_alloc, u8 is_skb)
 	return;
 
 drop:
-	/* Dev drop tx, free tx skb or buffer */
+	/* buf_info owns both its payload and metadata when allocation succeeded. */
+	if (buf_info) {
+		whc_dev_free_txbuf(buf_info);
+		return;
+	}
 	if (is_skb) {
 		dev_kfree_skb_any((struct sk_buff *) buf_alloc);
 	} else {

@@ -71,7 +71,7 @@ struct whc_usb {
 	atomic_t tx_inflight;
 	u8 txreq_available;
 	u8 usb_disconnecting;
-	u8 usb_deregistering;
+	bool netdev_registered;
 };
 
 struct rtw_usbreq {
@@ -93,5 +93,6 @@ struct rtw_usbreq *whc_usb_host_dequeue(struct list_head *q, int *counter);
 void whc_usb_host_recv_data_process(void *intf_priv);
 int whc_usb_host_send_event_check(u32 event_id);
 int whc_usb_xfer_download(struct whc_usb *priv);
+void whc_usb_host_quiesce(struct whc_usb *priv);
 
 #endif /* __INIC_USB_H__ */

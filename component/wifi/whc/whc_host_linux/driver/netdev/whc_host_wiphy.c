@@ -419,6 +419,13 @@ void rtw_wiphy_deinit(void)
 		return;
 	}
 
+	/* Also used by probe unwind. Never free a still-published wiphy, and do
+	 * not unregister one whose registration failed. Interfaces are gone. */
+	if (global_idev.wiphy_registered) {
+		wiphy_unregister(global_idev.pwiphy_global);
+		global_idev.wiphy_registered = false;
+	}
+
 #ifdef CONFIG_NAN
 	whc_host_cfgvendor_detach(global_idev.pwiphy_global);
 #endif

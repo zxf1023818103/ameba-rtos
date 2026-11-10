@@ -215,6 +215,9 @@ static int whc_host_recv_thread(void *data)
 
 		/* wait for sema*/
 		ret = down_interruptible(&recv_priv->rx_sema);
+		if (kthread_should_stop()) {
+			break;
+		}
 
 		whc_host_recv_data(global_idev.intf_priv);
 	}
@@ -247,5 +250,6 @@ void whc_host_recv_deinit(void)
 		kthread_stop(recv_priv->rx_thread);
 		recv_priv->rx_thread = NULL;
 	}
+	recv_priv->initialized = false;
 }
 

@@ -46,8 +46,10 @@ static void whc_usb_host_tx_complete_cb(struct urb *urb)
 	struct rtw_usbreq *req = (struct rtw_usbreq *)urb->context;
 
 	if (urb->status != 0) {
-		printk("tx urb sts=%d\n", urb->status);
-		return;
+		if (!READ_ONCE(priv->usb_disconnecting)) {
+			printk("tx urb sts=%d\n", urb->status);
+		}
+		/* An error/cancellation still completes this request and owns skb. */
 	}
 
 	if (req->skb) {
@@ -90,7 +92,7 @@ void whc_usb_host_send_data(u8 *buf, u32 len, struct sk_buff *pskb)
 		len = WHC_USB_TX_MAX_BUF_SIZE;
 	}
 
-	if (priv->usb_disconnecting && (!priv->usb_deregistering)) {
+	if (READ_ONCE(priv->usb_disconnecting)) {
 		if (pskb) {
 			dev_kfree_skb(pskb);
 		} else {
@@ -101,10 +103,14 @@ void whc_usb_host_send_data(u8 *buf, u32 len, struct sk_buff *pskb)
 	mutex_lock(&priv->lock);
 
 dequeue_again:
+	if (READ_ONCE(priv->usb_disconnecting)) {
+		goto exit_free_buf;
+	}
 	req = whc_usb_host_dequeue(&priv->tx_freeq, NULL);
 	if (req == NULL) {
 		priv->txreq_available = 0;
-		if (!wait_event_timeout(priv->txreq_wq, priv->txreq_available == 1, msecs_to_jiffies(500))) {
+		if (!wait_event_timeout(priv->txreq_wq,
+			priv->txreq_available == 1 || READ_ONCE(priv->usb_disconnecting), msecs_to_jiffies(500))) {
 			printk("wait txreq available timeout\n");
 			goto exit_free_buf;
 		} else {
@@ -123,15 +129,17 @@ dequeue_again:
 	usb_fill_bulk_urb(req->urb, priv->usb_dev, priv->tx_pipe[priv->out_pipe_idx],
 					  buf, len, whc_usb_host_tx_complete_cb, req);
 	priv->out_pipe_idx = (priv->out_pipe_idx + 1) % WIFI_OUT_EP_NUM_TOTAL;
+	/* Completion can run before usb_submit_urb returns. */
+	atomic_inc(&priv->tx_inflight);
 	ret = usb_submit_urb(req->urb, GFP_ATOMIC);
 	if (ret) {
+		atomic_dec(&priv->tx_inflight);
 		printk("%s: Failed to resubmit TX URB: %d\n", __func__, ret);
 		req->skb = NULL;
 		req->is_buf = 0;
 		whc_usb_host_enqueue(&priv->tx_freeq, req, NULL);
 		goto exit_free_buf;
 	}
-	atomic_inc(&priv->tx_inflight);
 	mutex_unlock(&priv->lock);
 	return;
 
@@ -147,7 +155,7 @@ exit_free_buf:
 	int actual_len = 0;
 	char *zlp_buf;
 
-	if (priv->usb_disconnecting && (!priv->usb_deregistering)) {
+	if (READ_ONCE(priv->usb_disconnecting)) {
 		return;
 	}
 
@@ -157,6 +165,10 @@ exit_free_buf:
 	}
 
 	mutex_lock(&priv->lock);
+	if (READ_ONCE(priv->usb_disconnecting)) {
+		mutex_unlock(&priv->lock);
+		return;
+	}
 	atomic_inc(&priv->tx_inflight);
 
 	usb_bulk_msg(priv->usb_dev, priv->tx_pipe[priv->out_pipe_idx], buf, len, &actual_len, 1000);
@@ -185,17 +197,21 @@ void whc_usb_host_send_xmitbuf(struct whc_xmit_buf *pxmitbuf)
 		len = WHC_USB_TX_MAX_BUF_SIZE;
 	}
 
-	if (priv->usb_disconnecting && (!priv->usb_deregistering)) {
+	if (READ_ONCE(priv->usb_disconnecting)) {
 		whc_host_xmitbuf_free(pxmitbuf);
 		return;
 	}
 	mutex_lock(&priv->lock);
 
 dequeue_again:
+	if (READ_ONCE(priv->usb_disconnecting)) {
+		goto exit_free_buf;
+	}
 	req = whc_usb_host_dequeue(&priv->tx_freeq, NULL);
 	if (req == NULL) {
 		priv->txreq_available = 0;
-		if (!wait_event_timeout(priv->txreq_wq, priv->txreq_available == 1, msecs_to_jiffies(500))) {
+		if (!wait_event_timeout(priv->txreq_wq,
+			priv->txreq_available == 1 || READ_ONCE(priv->usb_disconnecting), msecs_to_jiffies(500))) {
 			printk("wait txreq available timeout\n");
 			goto exit_free_buf;
 		} else {
@@ -213,8 +229,10 @@ dequeue_again:
 	req->urb->transfer_flags |= URB_ZERO_PACKET;
 	usb_fill_bulk_urb(req->urb, priv->usb_dev, priv->tx_pipe[pipe_idx],
 					  pxmitbuf->pbuf, len, whc_usb_host_tx_complete_cb, req);
+	atomic_inc(&priv->tx_inflight);
 	ret = usb_submit_urb(req->urb, GFP_ATOMIC);
 	if (ret) {
+		atomic_dec(&priv->tx_inflight);
 		printk("%s: Failed to submit TX URB: %d\n", __func__, ret);
 		req->skb = NULL;
 		req->is_buf = 0;
@@ -222,7 +240,6 @@ dequeue_again:
 		whc_usb_host_enqueue(&priv->tx_freeq, req, NULL);
 		goto exit_free_buf;
 	}
-	atomic_inc(&priv->tx_inflight);
 	mutex_unlock(&priv->lock);
 	return;
 
@@ -242,22 +259,21 @@ void whc_usb_host_rx_complete(struct urb *urb)
 	struct whc_usb *priv = &whc_usb_host_priv;
 	int	 ret;
 	unsigned long flags;
-	unsigned long addr;
 
 	req = (struct rtw_usbreq *)urb->context;
 
 
-	if (urb->status != 0) {
-		printk("urb sts=%d\n", urb->status);
+	if (urb->status != 0 || READ_ONCE(priv->usb_disconnecting)) {
 		return;
 	}
 
 	skb = dev_alloc_skb(WHC_USB_RX_MAX_BUF_SIZE);
-	addr = (unsigned long)(skb->data);
 
 	if (!skb) {
 		printk("cannot alloc skb, drop this packet\n");
-		return;
+		/* Reuse the old buffer to keep RX alive without a NULL dereference. */
+		skb = req->skb;
+		goto resubmit;
 	}
 
 	skb_copy = req->skb;
@@ -267,8 +283,11 @@ void whc_usb_host_rx_complete(struct urb *urb)
 	skb_queue_tail(&priv->rxnode_list, skb_copy);
 	spin_unlock_irqrestore(&priv->usb_rxskb_lock, flags);
 	//printk("acutul rcv=%d\n", urb->actual_length);
-	whc_host_recv_notify();
+	if (global_idev.host_init_done) {
+		whc_host_recv_notify();
+	}
 
+resubmit:
 	usb_fill_bulk_urb(req->urb, priv->usb_dev, priv->rx_pipe,
 					  skb->data, WHC_USB_RX_MAX_BUF_SIZE, whc_usb_host_rx_complete, req);
 	ret = usb_submit_urb(req->urb, GFP_ATOMIC);
@@ -309,10 +328,9 @@ int whc_usb_host_send_event_check(u32 event_id)
 {
 	struct whc_usb *priv = &whc_usb_host_priv;
 
-	/*when kernel's usb_disconnect triggered, endpoint will be disabled, thus cannot send event*/
-	/*but when driver->disconnect called by unregister_usb, since soft_unbind=1,
-	endpoint will not be disabled, event can still be send*/
-	if (priv->usb_disconnecting && (!priv->usb_deregistering)) {
+	/* Removal drains RX before releasing cfg80211 objects. This applies to
+	 * unbind/module removal too; do not wait for replies with RX stopped. */
+	if (READ_ONCE(priv->usb_disconnecting)) {
 		if (event_id == WHC_API_WIFI_DISCONNECT) {
 			whc_host_disconnect_indicate(0, 1, global_idev.bssid);
 			complete(&global_idev.mlme_priv.disconnect_done_sema);

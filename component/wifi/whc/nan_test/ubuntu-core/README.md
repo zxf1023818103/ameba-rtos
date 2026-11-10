@@ -433,3 +433,99 @@ CMake 保留原构建目录的 USB 配置、toolchain、PASN 修复和频段选�
 本轮使用 `NAN_2G_ONLY=ON`。原始 vendor archive 的 SHA-256 必须为
 `9ade71dee6186bfb5bdc634869d577e38746971bcbf09d908d87a87015cdbe6a`，
 不匹配时构建拒绝继续，不能跳过校验套用到其他版本。
+
+## 2026-11-10：USB 退出与 NAN 创建竞态
+
+在上述 VMware 中，用 USB `authorized=0/1` 模拟移除/重接，并同时执行
+`iw phy <phy> interface add nan0 type __nan`。旧驱动实际触发：
+
+```text
+BUG: kernel NULL pointer dereference, address: 0000000000000438
+rtw_nan_iface_alloc+0x112/0x2c0 [whc_usb]
+whc_host_add_virtual_intf -> nl80211_new_interface
+```
+
+STA 网卡已释放，而 wiphy 尚未注销；并发 NAN 创建继续读取
+`global_idev.pndev[0]->dev_addr`。此外，probe 失败路径原先会直接释放
+已注册的 wiphy，USB probe 还忽略了上层初始化失败。
+
+修复在 RTNL 下关闭接口创建入口，先停止 USB 回调、RX 线程和事件工作，
+再移除 NAN、STA/AP、注销并释放 wiphy。USB disconnect 使用绑定的
+`intfdata` 判断所有权；释放整个 URB 数组前等待全部完成回调，包含忙碌
+的 TX 请求。TX 取消/错误也回收 skb 和计数。固件用户配置读取失败会
+终止 probe 并撤销无线对象；退出时完成本地队列/扫描清理，不等待离线固件。
+
+### 快速重接的固件修复
+
+仅修复主机对象生命周期的 kernel `.4` 仍会遇到 USB 命令超时。
+联合 USB、串口与源码继续定位到以下问题，并在模组固件中修复：
+
+- 主机断开时不能再发送 NAN deinit；重接直接 init 会覆盖仍在运行的
+  NAN 状态和定时器。初始化前先执行可重复调用的 `rtw_nan_intfs_deinit()`。
+- 每次 USB set_config 重新分配三个 RX skb，旧指针被覆盖。改为一次分配、
+  由工作线程复用；配置代次隔离旧 RX/TX，防止重配置打断 skb 所有权交接。
+- 取消 IN 传输没有正常完成回调，可能留下 TX 缓冲及信号量。停止 DMA 后
+  返回所有权，由线程回收；重复完成、提交失败和跨配置等待也分别处理。
+- 蓝牙 USB RX/完成中断直接分配或释放内存，而 Green2 的 FreeRTOS 堆只
+  暂停调度、不屏蔽中断。长测实际出现堆链表及队列损坏、MemManage 和
+  看门狗复位。RX 改为固定大小队列按值复制；独立 TX 工作线程回收内存，
+  避免 RX 处理同步回包时等待自身回收而死锁。
+
+主机 kernel `.5` 同时记录超时 API ID，将 NAN init/start/stop/deinit
+传输失败返回给调用者；init 失败不再留下一个表面创建成功的 NAN 接口。
+未通过增加轮次间延时或延长 API 超时掩盖故障。
+
+最终部署 kernel `7.0.0-38.38r1-green2.5`（x4），WHC 模块 srcversion
+`1AD9C521FCE404702F02A96`，应用仍为 `20261109.11`。新 `app.bin`
+SHA-256 为 `c3fd052ceb51ddafa78375222f62d9de9af10df00af4963c2045e9e9118a476e`，
+通过 COM11 / 1.5 Mbps 只更新 app 分区，设备校验通过。
+固件保留现有 PASN/USB 修复选项，`NAN_2G_ONLY=OFF`；下面的回归由主机
+显式启动 2.4 GHz NAN。工厂 VMDK 尚未重新生成。
+
+两组测试连续运行，每轮先启动 NAN，再并发移除设备与创建接口：
+
+| 路径 | 成功/次数 | 单轮耗时 |
+| --- | ---: | ---: |
+| 复合 USB `authorized=0/1`，包括蓝牙接口 | 100/100 | 0.115–2.225 s |
+| 仅 WHC_USB unbind/bind，保留蓝牙接口 | 100/100 | 0.093–0.165 s |
+
+每轮均验证旧 PHY/接口消失、旧 PHY 拒绝创建、新 PHY 创建/删除 NAN
+成功，且无新增 WHC 超时、短响应、BUG/Oops/WARNING。两组期间 Linux
+boot ID 和 USB devnum 均未变化，串口无 MemManage/HardFault/看门狗复位。
+复合设备测试中，强制取消蓝牙初始化仍有 HCI 命令超时日志，造成部分
+轮次约 2 秒；这不计作 WHC 通信成功的证据，也不等于正常 BLE 业务超时。
+测试结束后 NAN、BLE、camera 均恢复 active，BLE powered 且广播实例为 1，
+TCP 8000 与 `nan0` 上的 SRT 9000 正在监听。手机端收发未在本轮复测。
+
+`amebagreen2_usb_nan_defconfig`、`amebagreen2_usb_wpaoh_fwdl_defconfig`、
+`amebagreen2_sdio_nan_defconfig` 均在 GCC 15 / `7.0.0-38-generic` headers
+下编译通过，后两项仅编译验证。确定性回归
+[test_usb_reconfigure.py](../../tests/test_usb_reconfigure.py) 编译实际生产函数，
+覆盖 1000 次 RX 重配置、RX 所有权交接竞态、TX 取消/重复完成/失败提交、
+旧配置发送者和蓝牙 ISR 无堆操作；四项测试均通过。
+
+复现工具 [usb_nan_hotplug.py](../../tests/usb_nan_hotplug.py) 先校验明确的
+USB 路径、VID/PID、序列号和 managed MAC；执行前停止相关业务，保留
+虚拟机串口记录。脚本要求目标 PHY 上没有已有 NAN 接口；停止服务后
+核对并删除该接口（本机为 `nan0`）。`__nan` 是 iw 接受的类型名称，
+`type nan` 无效。
+
+```sh
+sudo snap stop green2-nan-ble
+sudo /snap/green2-nan-ble/current/usr/sbin/iw dev nan0 del
+sudo /snap/green2-nan-ble/current/usr/bin/python3 usb_nan_hotplug.py \
+  --usb-device 2-4.1 --serial 00E04C000001 --mac 94:c9:60:59:06:fc \
+  --iw /snap/green2-nan-ble/current/usr/sbin/iw \
+  --ip /snap/green2-nan-ble/current/usr/bin/ip \
+  --active --rounds 100 --output /home/zxf/usb-hotplug.json
+sudo snap start green2-nan-ble
+```
+
+`--active` 在移除前启动 NAN；`--mode interface` 只解绑/重绑 WHC_USB。
+默认会同时中断该复合设备的 BLE。脚本没有轮次间固定延时，只有枚举
+状态轮询；失败时保存结果并尝试恢复绑定。脚本也检查新增内核错误和
+USB devnum，防止将静默超时或固件重启当成通过。此操作不等同于物理断电，
+不能对生产设备直接运行，也不代表每轮完成了空口配对与传输。原始内核
+日志、逐轮 JSON、构建日志及 kernel snap 留在
+`/home/zxf/green2-usb-reconnect-20261110/`；此前空指针复现记录仍在
+`/home/zxf/green2-usb-lifecycle-20261109/`，未把配对密钥写入仓库。

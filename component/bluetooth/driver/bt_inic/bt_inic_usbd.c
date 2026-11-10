@@ -127,6 +127,7 @@ static int inic_cb_set_config(void)
   */
 static int inic_cb_clear_config(void)
 {
+	bt_inic_clear_config();
 	return HAL_OK;
 }
 

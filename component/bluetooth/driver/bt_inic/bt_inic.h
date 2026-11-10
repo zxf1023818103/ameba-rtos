@@ -16,6 +16,7 @@ void bt_inic_usb_evt_txdone_cb(u8 *buf);
 void bt_inic_usb_acl_txdone_cb(u8 *buf);
 void bt_inic_status_change_cb(u8 old_status, u8 status);
 void bt_inic_set_config(void);
+void bt_inic_clear_config(void);
 
 void bt_inic_sdio_init(void);
 
