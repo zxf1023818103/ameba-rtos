@@ -1,0 +1,138 @@
+name: Green2 firmware release
+
+on:
+  push:
+    branches: [fix/green2-nan-ios-interop]
+    tags: ['green2-fw-*']
+    paths:
+      - 'component/**'
+      - 'cmake/**'
+      - 'tools/**'
+      - '.github/workflows/green2-firmware.yml'
+  workflow_dispatch:
+    inputs:
+      config:
+        description: Green2 firmware configuration
+        type: choice
+        default: green2_nan_usb_bt_usb_bulk2048
+        options:
+          - green2_nan_usb_bt_usb_bulk2048
+          - green2_nan_usb_bt_usb
+          - green2_nan_usb_bt_h4
+          - green2_nan_sdio
+          - green2_nan_sdio_bt_h4
+          - green2_nan_sdio_bt_h4_rpi_header
+      publish_release:
+        description: Publish a GitHub Release (otherwise artifact only)
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: green2-firmware-${{ github.ref }}-${{ inputs.config || 'green2_nan_usb_bt_usb_bulk2048' }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      package: ${{ steps.package.outputs.name }}
+    env:
+      FIRMWARE_VARIANT: ${{ inputs.config || 'green2_nan_usb_bt_usb_bulk2048' }}
+      USE_SECOND_SOURCE: 'True'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends cmake ninja-build ccache python3-venv
+          python3 -m venv "$RUNNER_TEMP/green2-python"
+          source "$RUNNER_TEMP/green2-python/bin/activate"
+          python -m pip install -r tools/ci/firmware-requirements.txt
+          echo "$VIRTUAL_ENV/bin" >> "$GITHUB_PATH"
+
+      - name: Cache precompiled ASDK
+        id: toolchain
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/rtk-toolchain/asdk-12.3.1-4600
+          key: green2-asdk-linux-12.3.1-4600-4fb40e15
+
+      - name: Download verified precompiled toolchain
+        if: steps.toolchain.outputs.cache-hit != 'true'
+        run: |
+          archive="$RUNNER_TEMP/asdk.tar.bz2"
+          curl --fail --location --retry 3 \
+            https://github.com/Ameba-AIoT/ameba-toolchain/releases/download/12.3.1_v4/asdk-12.3.1-linux-newlib-build-4600-x86_64.tar.bz2 \
+            --output "$archive"
+          echo "4fb40e15d6b4338f77a266e425a1ea1640c62f5f892c48a7395caf4f65286c1c  $archive" | sha256sum -c -
+          mkdir -p "$HOME/rtk-toolchain"
+          tar -xjf "$archive" -C "$HOME/rtk-toolchain"
+
+      - name: Test firmware packaging
+        run: python -m unittest discover -s tools/ci/tests -v
+
+      - name: Build Green2 firmware
+        env:
+          TOOLCHAIN_DIR: /home/runner/rtk-toolchain
+          JOBS: '4'
+        run: |
+          export FIRMWARE_CONFIG="$GITHUB_WORKSPACE/component/wifi/whc/nan_test/module/$FIRMWARE_VARIANT.config"
+          bash component/wifi/whc/nan_test/module/build-firmware.sh "$RUNNER_TEMP/green2-firmware"
+
+      - name: Package original and combined firmware
+        id: package
+        run: |
+          name="green2-${FIRMWARE_VARIANT}-${GITHUB_SHA:0:12}-${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
+          python tools/ci/package-firmware.py \
+            --build-dir "$RUNNER_TEMP/green2-firmware" --output-dir dist \
+            --name "$name" --config "component/wifi/whc/nan_test/module/$FIRMWARE_VARIANT.config"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "Firmware: $name.zip; includes original binaries and Image_All.bin" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload firmware package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: |
+            dist/*.zip
+            dist/*.zip.sha256
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/green2-fw-') || (github.event_name == 'workflow_dispatch' && inputs.publish_release)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.build.outputs.package }}
+          path: dist
+      - name: Publish firmware release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_SHA: ${{ github.sha }}
+          SOURCE_REF: ${{ github.ref }}
+          PACKAGE_NAME: ${{ needs.build.outputs.package }}
+        run: |
+          if [[ "$SOURCE_REF" == refs/tags/* ]]; then
+            tag="${SOURCE_REF#refs/tags/}"
+          else
+            tag="green2-fw-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
+          fi
+          printf 'Source: `%s`\n\nContains original SDK firmware binaries, `Image_All.bin`, configuration, flash layout and SHA256 checksums.\n\nGreen2 NOR: combined image starts at flash offset 0; app starts at 0x40000.\n' "$SOURCE_SHA" > release-notes.md
+          # Refuse to replace published assets; reruns must use a new release tag.
+          gh release create "$tag" dist/*.zip dist/*.zip.sha256 \
+            --target "$SOURCE_SHA" --title "$PACKAGE_NAME" --notes-file release-notes.md
