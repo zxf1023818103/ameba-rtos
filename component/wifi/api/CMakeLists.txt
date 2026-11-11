@@ -48,6 +48,16 @@ set(private_definitions)             #private definitions
 set(private_compile_options)         #private compile_options
 
 option(AMEBA_GREEN2_NAN_2G_ONLY "Restrict the dedicated Green2 NAN bench to 2.4 GHz" OFF)
+option(AMEBA_GREEN2_NAN_5G_ONLY "Green2 bench: 5 GHz only, software channel plan 0x6F (no efuse writes)" OFF)
+if(AMEBA_GREEN2_NAN_2G_ONLY AND AMEBA_GREEN2_NAN_5G_ONLY)
+    message(FATAL_ERROR "NAN 2.4 GHz-only and 5 GHz-only benches are mutually exclusive")
+endif()
+if(AMEBA_GREEN2_NAN_5G_ONLY)
+    if(NOT CONFIG_AMEBAGREEN2 OR NOT CONFIG_WIFI_NAN_ENABLE OR NOT CONFIG_WHC_DEV)
+        message(FATAL_ERROR "NAN 5 GHz bench requires Green2 WHC device with NAN")
+    endif()
+    list(APPEND private_definitions AMEBA_GREEN2_NAN_5G_ONLY=1)
+endif()
 if(AMEBA_GREEN2_NAN_2G_ONLY)
     if(NOT CONFIG_AMEBAGREEN2 OR NOT CONFIG_WIFI_NAN_ENABLE OR NOT CONFIG_WHC_DEV)
         message(FATAL_ERROR "NAN 2.4 GHz bench requires Green2 WHC device with NAN")

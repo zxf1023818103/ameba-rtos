@@ -54,6 +54,9 @@ set(private_sources)                 #private source files, NOTE: relative path 
 set(private_includes)                #private include directories, NOTE: relative path is OK
 set(private_definitions)             #private definitions
 set(private_compile_options)         #private compile_options
+if(AMEBA_GREEN2_NAN_5G_ONLY)
+    list(APPEND private_definitions AMEBA_GREEN2_NAN_5G_ONLY=1)
+endif()
 
 option(AMEBA_GREEN2_NAN_PASN_CIPHER_FIX
     "Experimental PASN response cipher fix for the verified Green2 WHC library" OFF)

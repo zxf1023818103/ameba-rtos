@@ -204,8 +204,22 @@ if(AMEBA_GREEN2_NAN_PREBUILT_LIBRARY AND CONFIG_WHC_DEV)
 endif()
 
 if(CONFIG_WLAN AND (CONFIG_WHC_DEV OR CONFIG_WHC_NONE))
+    set(wifi_selected_archive "${c_SDK_LIB_APPLICATION_DIR}/lib_${release_target_name}.a")
+    if(AMEBA_GREEN2_NAN_5G_ONLY)
+        if(NOT CONFIG_AMEBAGREEN2 OR NOT CONFIG_WIFI_NAN_ENABLE OR
+           NOT (release_target_name STREQUAL "wifi_whc_np" OR
+                release_target_name STREQUAL "wifi_whc_dev_nan_fixed"))
+            message(FATAL_ERROR "5 GHz-only experiment requires verified Green2 NP / NAN fixed archives")
+        endif()
+        set(nan5g_archive "${CMAKE_CURRENT_BINARY_DIR}/lib_${release_target_name}_nan5g.a")
+        execute_process(COMMAND python
+            "${c_CMPT_WIFI_DIR}/whc/whc_dev/make_nan_5g_only_library.py"
+            --ar "${CMAKE_AR}" "${wifi_selected_archive}" "${nan5g_archive}"
+            COMMAND_ERROR_IS_FATAL ANY)
+        set(wifi_selected_archive "${nan5g_archive}")
+    endif()
     ameba_list_append_if(CONFIG_WLAN public_libraries
-        ${c_SDK_LIB_APPLICATION_DIR}/lib_${release_target_name}.a
+        ${wifi_selected_archive}
     )
 endif()
 

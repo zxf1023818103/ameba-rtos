@@ -38,7 +38,12 @@ const struct rtw_country_code_table country_code_table[] = {
 	{{'Q', 'A'}, 0x5e, TXPWR_LMT_QATAR}, /* 0073 Qatar */
 	{{'R', 'U'}, 0x09, TXPWR_LMT_ETSI}, /* 0075 Russian */
 	{{'U', 'A'}, 0x5e, TXPWR_LMT_UKRAINE}, /* 0082 Ukraine */
+#ifdef AMEBA_GREEN2_NAN_5G_ONLY
+	/* R64 worksheet B63:H63: 2G_00 + 5G_06; bench restriction only. */
+	{{'C', 'N'}, 0x6f, TXPWR_LMT_CN},
+#else
 	{{'C', 'N'}, 0x06, TXPWR_LMT_CN}, /* 0088 China */
+#endif
 	{{'I', 'D'}, 0x5d, TXPWR_LMT_ETSI}, /* 0091 Indonesia */
 	{{'K', 'R'}, 0x4b, TXPWR_LMT_KCC}, /* 0092 South Korea */
 	{{'M', 'Y'}, 0x07, TXPWR_LMT_ETSI}, /* 0093 Malaysia */

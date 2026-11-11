@@ -746,6 +746,10 @@ void whc_event_nan_start(u32 api_id, u32 *param_buf)
 	int ret = 0;
 	u8 master_pref = (u8)param_buf[0];
 	u8 band_support = (u8)param_buf[1];
+#ifdef AMEBA_GREEN2_NAN_5G_ONLY
+	/* Fail closed: ignore any host request to re-enable the 2.4 GHz band. */
+	band_support = RTW_SUPPORT_BAND_5G;
+#endif
 
 #ifdef GREEN2_NAN_STARTUP_TRACE
 	extern void green2_nan_startup_trace_install(void);
@@ -753,6 +757,22 @@ void whc_event_nan_start(u32 api_id, u32 *param_buf)
 #endif
 
 	rtw_nan_start_api(master_pref, band_support, NAN_CMD_TYPE_NATIVE_IW);
+#ifdef AMEBA_GREEN2_NAN_5G_ONLY
+	{
+		extern unsigned char *g_nanpriv;
+		if (!g_nanpriv || (g_nanpriv[2345] & 3) != RTW_SUPPORT_BAND_5G ||
+		    g_nanpriv[2346] < 36 || g_nanpriv[2347] < 36) {
+			rtw_nan_stop_api();
+			ret = -1;
+		}
+		RTK_LOGS(TAG_WLAN_INIC, RTK_LOG_INFO,
+		       "[NAN5G] mask=%u primary=%u secondary=%u enabled=%u ret=%d\n",
+		       g_nanpriv ? g_nanpriv[2345] : 0,
+		       g_nanpriv ? g_nanpriv[2346] : 0,
+		       g_nanpriv ? g_nanpriv[2347] : 0,
+		       g_nanpriv ? !!(g_nanpriv[2350] & 2) : 0, ret);
+	}
+#endif
 	whc_send_api_ret_value(api_id, (u8 *)&ret, sizeof(ret));
 }
 

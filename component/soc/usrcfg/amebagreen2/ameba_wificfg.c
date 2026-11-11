@@ -66,6 +66,14 @@ _WEAK void wifi_set_user_config(void)
 	wifi_user_config.wifi_wpa_mode_force = RTW_WPA_AUTO_MODE;
 
 	/*Regulatory related*/
+#ifdef AMEBA_GREEN2_NAN_5G_ONLY
+	/* Reversible laboratory configuration; preserve CN TX power limits.
+	 * The bench's CN lookup uses channel plan 0x6F (2G_00 + 5G_06).
+	 * No efuse or OTP programming is performed. */
+	wifi_user_config.country_code[0] = 'C';
+	wifi_user_config.country_code[1] = 'N';
+	wifi_user_config.freq_band_support = RTW_SUPPORT_BAND_5G;
+#else
 	wifi_user_config.country_code[0] = 0;
 	wifi_user_config.country_code[1] = 0;
 #ifdef AMEBA_GREEN2_NAN_2G_ONLY
@@ -73,6 +81,7 @@ _WEAK void wifi_set_user_config(void)
 	wifi_user_config.freq_band_support = RTW_SUPPORT_BAND_2_4G;
 #else
 	wifi_user_config.freq_band_support = RTW_SUPPORT_BAND_MAX;
+#endif
 #endif
 	wifi_user_config.tx_pwr_table_selection = 2;
 	wifi_user_config.tpc_enable = 0; /* 1: apply TPC for FCC/MKK/KCC/IC/ETSI(5.25~5.35GHz, 5.47~5.725GHz), CN(5.25~5.35GHz) */

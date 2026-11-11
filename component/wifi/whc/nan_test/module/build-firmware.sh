@@ -18,5 +18,6 @@ cmake -S "$repo/component/soc/amebagreen2/project" -B "$work/build" -G Ninja \
     "-DEXTERN_DIR=$work" "${toolchain[@]}" \
     -DAMEBA_GREEN2_NAN_PASN_CIPHER_FIX=ON \
     "-DAMEBA_GREEN2_NAN_2G_ONLY=${NAN_2G_ONLY:-OFF}" \
+    "-DAMEBA_GREEN2_NAN_5G_ONLY=${NAN_5G_ONLY:-OFF}" \
     "-DAMEBA_GREEN2_NAN_PREBUILT_LIBRARY=${NAN_PREBUILT_LIBRARY:-ON}"
 cmake --build "$work/build" -j"${JOBS:-8}"
